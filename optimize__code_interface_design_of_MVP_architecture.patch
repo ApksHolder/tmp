@@ -1,0 +1,4183 @@
+Subject: [PATCH] optimize: code interface design of MVP architecture
+---
+Index: app/src/main/java/com/liuzhenlin/videos/presenter/IFeedbackPresenter.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/IFeedbackPresenter.java b/app/src/main/java/com/liuzhenlin/videos/presenter/IFeedbackPresenter.java
+--- a/app/src/main/java/com/liuzhenlin/videos/presenter/IFeedbackPresenter.java	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/presenter/IFeedbackPresenter.java	(date 1735239078228)
+@@ -14,23 +14,24 @@
+ 
+ import com.liuzhenlin.videos.view.activity.IFeedbackView;
+ 
++import javax.annotation.Nonnull;
++
+ /**
+  * @author 刘振林
+  */
+ public interface IFeedbackPresenter extends IPresenter<IFeedbackView> {
+ 
+-    void restoreData(@Nullable Bundle savedInstanceState);
+-    void saveData(@NonNull Bundle outState, @NonNull String text, @NonNull String contactWay);
++    void restoreInstanceState(@Nullable Bundle savedInstanceState);
++    void saveInstanceState(@NonNull Bundle outState);
+ 
+-    void sendFeedback(@NonNull String text, @NonNull String contactWay);
+-    void persistentlySaveUserFilledData(
+-            @NonNull String text, @NonNull String contactWay, boolean toastResultIfSaved);
++    void persistentlySaveUserFilledData(boolean toastResultIfSaved);
+ 
+-    boolean hasDataChanged(@NonNull String text, @NonNull String contactWay);
++    void onBackPressed(@Nonnull OnBackPressedCallback callback);
++
++    void sendFeedback();
+ 
+     void addPicture(@Nullable String path);
+     void removePictureAt(int index);
+-    void recyclePictures();
+ 
+     @NonNull
+     <T extends BaseAdapter & AdapterView.OnItemClickListener> T getPictureGridAdapter();
+@@ -39,4 +40,9 @@
+     static IFeedbackPresenter newInstance() {
+         return new FeedbackPresenter();
+     }
++
++    interface OnBackPressedCallback {
++        void showConfirmSaveDataDialog();
++        void back();
++    }
+ }
+Index: app/src/main/java/com/liuzhenlin/videos/presenter/VideoMovePresenter.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/VideoMovePresenter.kt b/app/src/main/java/com/liuzhenlin/videos/presenter/VideoMovePresenter.kt
+--- a/app/src/main/java/com/liuzhenlin/videos/presenter/VideoMovePresenter.kt	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/presenter/VideoMovePresenter.kt	(date 1735242229613)
+@@ -8,30 +8,19 @@
+ import android.os.Bundle
+ import android.view.ViewGroup
+ import com.liuzhenlin.common.adapter.ImageLoadingListAdapter
+-import com.liuzhenlin.common.utils.FileUtils
+-import com.liuzhenlin.common.utils.LateinitProperty
+-import com.liuzhenlin.common.utils.Regex
+-import com.liuzhenlin.videos.*
+-import com.liuzhenlin.videos.bean.Video
+-import com.liuzhenlin.videos.bean.VideoDirectory
+-import com.liuzhenlin.videos.bean.VideoListItem
+-import com.liuzhenlin.videos.dao.VideoListItemDao
++import com.liuzhenlin.videos.firstVideoOrNull
++import com.liuzhenlin.videos.model.VideoMoveRepository
+ import com.liuzhenlin.videos.view.fragment.IVideoMoveView
+-import java.io.File
+ 
+ interface IVideoMovePresenter : IPresenter<IVideoMoveView> {
+ 
+-    fun restoreData(savedInstanceState: Bundle?)
+-    fun saveData(outState: Bundle)
+-
+-    public val videoQuantity: Int
++    fun restoreInstanceState(savedInstanceState: Bundle?)
++    fun saveInstanceState(outState: Bundle)
+ 
+-    fun moveVideos(): Boolean
++    fun moveVideosToCheckedDir()
++    fun onVideoMovePromptConfirmed(neverPromptAgain: Boolean)
+ 
+-    fun isTargetDirChecked(index: Int): Boolean
+-    fun setTargetDirChecked(index: Int, checked: Boolean)
+-
+-    fun newTargetDirListAdapter(): ImageLoadingListAdapter<out IVideoMoveView.TargetDirListViewHolder>
++    fun toggleTargetDirChecked(index: Int)
+ 
+     companion object {
+         @JvmStatic
+@@ -41,194 +30,71 @@
+     }
+ }
+ 
+-class VideoMovePresenter : Presenter<IVideoMoveView>(), IVideoMovePresenter {
++class VideoMovePresenter : Presenter<IVideoMoveView>(), IVideoMovePresenter,
++        VideoMoveRepository.Callback {
+ 
+-    private val mTargetDirs = object : LateinitProperty<Array<VideoDirectory>>() {
+-        override fun initialize(): Array<VideoDirectory> {
+-            val targetDirs: Array<VideoDirectory?>
+-            val parcels = mView?.getArguments()?.getParcelableArray(KEY_VIDEODIRS)
+-            if (parcels != null) {
+-                targetDirs = arrayOfNulls(parcels.size)
+-                for (i in parcels.indices) {
+-                    val videodir = parcels[i] as VideoDirectory
+-                    videodir.isChecked = false
+-                    targetDirs[i] = videodir
+-                }
+-            } else {
+-                targetDirs = arrayOf()
+-            }
+-            @Suppress("UNCHECKED_CAST")
+-            return targetDirs as Array<VideoDirectory>
+-        }
+-    }
+-
+-    private val mVideos = object : LateinitProperty<List<VideoListItem>>() {
+-        override fun initialize(): List<VideoListItem> {
+-            return mView?.getArguments()?.getParcelableArrayList(KEY_VIDEOS) ?: listOf()
+-        }
+-    }
++    private var mVideoMoveRepository: VideoMoveRepository? = null
+ 
+     override fun attachToView(view: IVideoMoveView) {
+         super.attachToView(view)
+-        mTargetDirs.reset()
+-        mVideos.reset()
++        mVideoMoveRepository = VideoMoveRepository.create(mContext, view.getArguments())
++        mVideoMoveRepository!!.setCallback(this)
+     }
+ 
+-    override fun restoreData(savedInstanceState: Bundle?) {
+-        if (savedInstanceState != null) {
+-            val checkedPosition = savedInstanceState.getInt(KEY_SELECTION, -1)
+-            if (checkedPosition >= 0) {
+-                setTargetDirChecked(checkedPosition, true)
+-            }
+-        }
++    override fun detachFromView(view: IVideoMoveView) {
++        super.detachFromView(view)
++        mVideoMoveRepository?.setCallback(null)
++        mVideoMoveRepository = null
++    }
++
++    override fun onViewCreated(view: IVideoMoveView) {
++        super.onViewCreated(view)
++        mView?.init(TargetDirListAdapter(), mVideoMoveRepository?.videoQuantity ?: 0)
++    }
++
++    override fun restoreInstanceState(savedInstanceState: Bundle?) {
++        mVideoMoveRepository?.restoreInstanceState(savedInstanceState)
+     }
+ 
+-    override fun saveData(outState: Bundle) {
+-        val videodirs = mTargetDirs.getNoInitialize()
+-        if (videodirs != null) {
+-            for (index in videodirs.indices) {
+-                if (videodirs[index].isChecked) {
+-                    outState.putInt(KEY_SELECTION, index)
+-                    return
+-                }
+-            }
+-            outState.remove(KEY_SELECTION)
+-        }
++    override fun saveInstanceState(outState: Bundle) {
++        mVideoMoveRepository?.saveInstanceState(outState)
+     }
+ 
+-    override val videoQuantity: Int
+-        get() {
+-            val videos = mVideos.get()
+-            return if (videos.size == 1
+-                    && (videos[0] is Video || (videos[0] as VideoDirectory).videoCount() == 1)) {
+-                1
+-            } else {
+-                1.inv()
+-            }
+-        }
++    override fun moveVideosToCheckedDir() {
++        val repository = mVideoMoveRepository
++        if (repository != null && !repository.needShowVideoPromptDialog()) {
++            mView?.showVideoMovePromptDialog()
++        } else {
++            mVideoMoveRepository?.moveVideosToCheckedDir()
++        }
++    }
+ 
+-    override fun moveVideos(): Boolean {
+-        for (videodir in mTargetDirs.get()) {
+-            if (videodir.isChecked) {
+-                var moved = false
+-                val dao = VideoListItemDao.getSingleton(mContext)
+-                for (video in mVideos.get()) {
+-                    moved = if (video is VideoDirectory) {
+-                        moved or moveVideoDirTo(video, videodir, dao)
+-                    } else {
+-                        val v = video as Video
+-                        moved or moveVideoTo(v, videodir, dao)
+-                    }
+-                }
+-                return moved
+-            }
++    override fun onVideoMovePromptConfirmed(neverPromptAgain: Boolean) {
++        if (neverPromptAgain) {
++            mVideoMoveRepository?.setVideoPromptDialogNeedBeShown(true)
+         }
+-        return false
++        mVideoMoveRepository?.moveVideosToCheckedDir()
+     }
+ 
+-    private fun moveVideoDirTo(
+-            videodir: VideoDirectory, targetVideoDir: VideoDirectory, dao: VideoListItemDao)
+-    : Boolean {
+-        val dirName = FileUtils.getFileNameFromFilePath(videodir.path)
+-        val targetDirPath = targetVideoDir.path + File.separator + dirName
+-        val targetDirFile = File(targetDirPath)
+-        if (!targetDirFile.exists()) {
+-            targetDirFile.mkdirs()
+-        }
+-        var targetDir = mTargetDirs.get().find { it.path.equals(targetDirPath, ignoreCase = true) }
+-        if (targetDir == null) {
+-            targetDir = dao.queryVideoDirByPath(targetDirPath)
+-            if (targetDir == null) {
+-                targetDir = dao.insertVideoDir(targetDirPath)
+-            }
+-        }
+-        var moved = false
+-        for (item in videodir.videoListItems) {
+-            moved = if (item is VideoDirectory) {
+-                moved or moveVideoDirTo(item, targetDir, dao)
+-            } else {
+-                val v = item as Video
+-                moved or moveVideoTo(v, targetDir, dao)
+-            }
+-        }
+-        return moved
++    override fun onVideoMoveStart() {
++        mView?.onVideoMoveStart()
+     }
+-
+-    private fun moveVideoTo(video: Video, videodir: VideoDirectory, dao: VideoListItemDao): Boolean {
+-        val videoPath = video.path
+-        for (v in videodir.videoListItems) {
+-            if (v is Video && v.name.equals(video.name, ignoreCase = true)) {
+-                if (v.path.equals(videoPath, ignoreCase = true))
+-                    return false
+ 
+-                var i = 1
+-                var videoName: String
+-                val vTitleSuffixRegex = Regex("(-\\d+)$")
+-                var vTitle = v.title
+-                if (vTitleSuffixRegex.find(vTitle)) {
+-                    i = vTitleSuffixRegex.group()!!.substring(1).toInt() + 1
+-                    vTitle = vTitle.substring(0, vTitleSuffixRegex.start())
+-                }
+-                outer@
+-                while (true) {
+-                    videoName = vTitle + '-' + i + v.suffix
+-                    for (v2 in videodir.videoListItems) {
+-                        if (v2 is Video) {
+-                            if (v2.name.equals(videoName, ignoreCase = true)) {
+-                                i++
+-                                continue@outer
+-                            }
+-                        }
+-                    }
+-                    break
+-                }
+-                video.name = videoName
+-                video.path = video.path.replaceAfterLast(File.separatorChar, video.name)
+-                break
+-            }
+-        }
+-        videodir.videoListItems.add(video)
+-        video.isTopped = false
+-        video.path = video.path.replaceBeforeLast(File.separatorChar, videodir.path)
+-        return File(videoPath).renameTo(File(video.path)) && dao.updateVideo(video)
++    override fun onVideoMoveFinish(moved: Boolean) {
++        mView?.onVideoMoveFinish(moved)
+     }
+ 
+-    override fun isTargetDirChecked(index: Int): Boolean =
+-        mTargetDirs.get()[index].isChecked
+-
+-    override fun setTargetDirChecked(index: Int, checked: Boolean) {
+-        val targetDirs = mTargetDirs.get()
+-        if (targetDirs[index].isChecked != checked) {
+-            var oldCheckedCount = 0
+-            var checkedCount = 0
+-            for (i in targetDirs.indices) {
+-                if (i == index) {
+-                    if (checked) {
+-                        ++checkedCount
+-                    } else {
+-                        ++oldCheckedCount
+-                    }
+-                    targetDirs[i].isChecked = checked
+-                    mView?.setTargetDirListItemChecked(i, checked)
+-                } else {
+-                    if (targetDirs[i].isChecked) {
+-                        ++oldCheckedCount
+-                        if (checked) {
+-                            targetDirs[i].isChecked = false
+-                            mView?.setTargetDirListItemChecked(i, false)
+-                        }
+-                    }
+-                }
+-            }
+-            if (checkedCount != oldCheckedCount) {
+-                mView?.onCheckedTargetDirListItemCountChanged(checkedCount)
+-            }
+-        }
++    override fun toggleTargetDirChecked(index: Int) {
++        val repository = mVideoMoveRepository
++        repository?.setTargetDirChecked(index, !repository.isTargetDirChecked(index))
++    }
++
++    override fun onTargetDirCheckedChanged(index: Int, checked: Boolean) {
++        mView?.setTargetDirListItemChecked(index, checked)
+     }
+ 
+-    override fun newTargetDirListAdapter()
+-            : ImageLoadingListAdapter<out IVideoMoveView.TargetDirListViewHolder> {
+-        return TargetDirListAdapter()
++    override fun onCheckedTargetDirCountChanged(index: Int) {
++        mView?.onCheckedTargetDirListItemCountChanged(index)
+     }
+ 
+     private inner class TargetDirListAdapter
+@@ -239,12 +105,12 @@
+             return mView.newTargetDirListViewHolder(parent)
+         }
+ 
+-        override fun getItemCount() = mTargetDirs.get().size
++        override fun getItemCount() = mVideoMoveRepository?.targetDirs?.get()?.size ?: 0
+ 
+         override fun onBindViewHolder(holder: IVideoMoveView.TargetDirListViewHolder, position: Int,
+                                       payloads: MutableList<Any>) {
+             super.onBindViewHolder(holder, position, payloads)
+-            holder.bindData(mTargetDirs.get()[position], position, payloads)
++            holder.bindData(mVideoMoveRepository!!.targetDirs.get()[position], position, payloads)
+         }
+ 
+         override fun cancelLoadingItemImages(holder: IVideoMoveView.TargetDirListViewHolder) {
+@@ -252,7 +118,8 @@
+         }
+ 
+         override fun loadItemImages(holder: IVideoMoveView.TargetDirListViewHolder) {
+-            holder.loadItemImages(mTargetDirs.get()[holder.bindingAdapterPosition].firstVideoOrNull()!!)
++            val videodir = mVideoMoveRepository!!.targetDirs.get()[holder.bindingAdapterPosition]
++            holder.loadItemImages(videodir.firstVideoOrNull()!!)
+         }
+     }
+ }
+\ No newline at end of file
+Index: app/src/main/java/com/liuzhenlin/videos/model/Repository.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/model/Repository.java b/app/src/main/java/com/liuzhenlin/videos/model/Repository.java
+new file mode 100644
+--- /dev/null	(date 1735060889953)
++++ b/app/src/main/java/com/liuzhenlin/videos/model/Repository.java	(date 1735060889953)
+@@ -0,0 +1,25 @@
++/*
++ * Created on 2024-12-23 9:35:41 PM.
++ * Copyright © 2024 刘振林. All rights reserved.
++ */
++
++package com.liuzhenlin.videos.model;
++
++import android.os.Bundle;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++public interface Repository<C extends Repository.Callback> {
++
++    default void restoreInstanceState(@Nullable Bundle savedInstanceState) {
++    }
++
++    default void saveInstanceState(@NonNull Bundle outState) {
++    }
++
++    void setCallback(@Nullable C callback);
++
++    interface Callback {
++    }
++}
+Index: app/src/main/java/com/liuzhenlin/videos/model/VideoRepository.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/model/VideoRepository.java b/app/src/main/java/com/liuzhenlin/videos/model/VideoRepository.java
+new file mode 100644
+--- /dev/null	(date 1735239078272)
++++ b/app/src/main/java/com/liuzhenlin/videos/model/VideoRepository.java	(date 1735239078272)
+@@ -0,0 +1,41 @@
++/*
++ * Created on 2024-12-23 10:01:33 PM.
++ * Copyright © 2024 刘振林. All rights reserved.
++ */
++
++package com.liuzhenlin.videos.model;
++
++import android.content.Context;
++import android.content.Intent;
++import android.os.Bundle;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++import com.liuzhenlin.videos.bean.Video;
++
++public interface VideoRepository extends Repository<VideoRepository.Callback> {
++
++    @NonNull
++    static VideoRepository create(@NonNull Context context) {
++        return new VideoRepositoryImpl(context);
++    }
++
++    boolean initPlaylist(@Nullable Bundle savedInstanceState, @NonNull Intent intent);
++
++    @Nullable Video[] getVideos();
++
++    @Nullable Video getCurrentVideo();
++
++    int getVideoIndex();
++
++    void setVideoIndex(int index);
++    void moveVideoIndexBackward();
++    void moveVideoIndexForward();
++
++    void setVideoProgress(@NonNull Video video, int progress, boolean updateDB);
++
++    public interface Callback extends Repository.Callback {
++        void onVideoIndexChanged(int oldIndex, int index);
++    }
++}
+Index: app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalVideoListFragment.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalVideoListFragment.kt b/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalVideoListFragment.kt
+--- a/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalVideoListFragment.kt	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalVideoListFragment.kt	(date 1735242229676)
+@@ -32,9 +32,11 @@
+ import com.bumptech.glide.Glide
+ import com.bumptech.glide.request.target.CustomViewTarget
+ import com.bumptech.glide.request.transition.Transition
++import com.google.android.material.snackbar.Snackbar
+ import com.liuzhenlin.circularcheckbox.CircularCheckBox
+ import com.liuzhenlin.common.Configs.ScreenWidthDpLevel
+ import com.liuzhenlin.common.Consts.EMPTY_STRING
++import com.liuzhenlin.common.adapter.HeaderAndFooterWrapper
+ import com.liuzhenlin.common.adapter.ImageLoadingListAdapter
+ import com.liuzhenlin.common.compat.ViewCompatibility
+ import com.liuzhenlin.common.listener.OnBackPressedListener
+@@ -70,6 +72,9 @@
+     fun getArguments(): Bundle?
+     fun onReturnResult(resultCode: Int, data: Intent?)
+ 
++    fun init(isSublist: Boolean, listTitle: String?, listTitleDesc: String?,
++             @SortMode listSortMode: Int, listAdapter: HeaderAndFooterWrapper<out VideoListViewHolder>)
++
+     fun goToLocalVideoSubListFragment(args: Bundle)
+     fun goToVideoMoveFragment(args: Bundle)
+ 
+@@ -105,13 +110,17 @@
+     private lateinit var mSortBySizeBtn: TextView
+ 
+     private lateinit var mRecyclerView: SlidingItemMenuRecyclerView
+-    private val mAdapterWrapper by lazy(LazyThreadSafetyMode.NONE) { presenter.getVideoListAdapter() }
++    private lateinit var mAdapterWrapper
++            : HeaderAndFooterWrapper<out ILocalVideoListView.VideoListViewHolder>
++    private var mSublist: Boolean = false
++    private var mListTitle: String? = null
+ 
+     private var mItemOptionsWindow: PopupWindow? = null
+     private var mDeleteItemsWindow: PopupWindow? = null
+     private var mDeleteItemDialog: Dialog? = null
+     private var mRenameItemDialog: Dialog? = null
+     private var mItemDetailsDialog: Dialog? = null
++    private var mItemsDeletingDialog: Dialog? = null
+ 
+     private var mTitleWindowFrame: FrameLayout? = null
+     private var mSelectAllButton: TextView? = null
+@@ -193,25 +202,36 @@
+ 
+     override fun onCreateView(
+             inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
+-        if (presenter.isSublist) {
++        val contentView = inflater.inflate(R.layout.fragment_local_video_list, container, false)
++        return attachViewToSwipeBackLayout(contentView)
++    }
++
++    override fun init(
++            isSublist: Boolean, listTitle: String?, listTitleDesc: String?, listSortMode: Int,
++            listAdapter: HeaderAndFooterWrapper<out ILocalVideoListView.VideoListViewHolder>) {
++        mSublist = isSublist
++        mListTitle = listTitle
++        mAdapterWrapper = listAdapter
++
++        if (isSublist) {
+             val actionbar = mInteractionCallback.getActionBar(this)
+             actionbar.findViewById<View>(R.id.btn_back).setOnClickListener(this)
+-            actionbar.findViewById<TextView>(R.id.text_title).text = presenter.listTitle
+-            actionbar.findViewById<TextView>(R.id.text_titleDesc).text = presenter.listTitleDesc
++            actionbar.findViewById<TextView>(R.id.text_title).text = listTitle
++            actionbar.findViewById<TextView>(R.id.text_titleDesc).text = listTitleDesc
+             actionbar.findViewById<HorizontalScrollView>(R.id.hsv_titleDescText).let {
+                 Utils.runOnLayoutValid(it) { it.fullScroll(View.FOCUS_RIGHT) }
+             }
+         }
+ 
+-        val contentView = inflater.inflate(R.layout.fragment_local_video_list, container, false)
++        val contentView = requireView()
+         mRecyclerView = contentView.findViewById(R.id.simrv_videoList)
+         mRecyclerView.layoutManager = LinearLayoutManager(contentView.context)
+-        mRecyclerView.adapter = mAdapterWrapper
++        mRecyclerView.adapter = listAdapter
+         mRecyclerView.addItemDecoration(
+                 DividerItemDecoration(contentView.context, DividerItemDecoration.VERTICAL))
+         mRecyclerView.setHasFixedSize(true)
+ 
+-        mSortBar = inflater.inflate(R.layout.toolbar_local_video_list, mRecyclerView, false)
++        mSortBar = layoutInflater.inflate(R.layout.toolbar_local_video_list, mRecyclerView, false)
+                 as ViewGroup
+         mAdapterWrapper.addHeaderView(mSortBar)
+         mSortByNameBtn = mSortBar.findViewById<TextView>(R.id.btn_sortByName)
+@@ -220,10 +240,9 @@
+                 .apply { setOnClickListener(this@LocalVideoListFragment) }
+         mSortBySizeBtn = mSortBar.findViewById<TextView>(R.id.btn_sortBySize)
+                 .apply { setOnClickListener(this@LocalVideoListFragment) }
+-        onItemsSortModeChange(presenter.listSortMode)
++        onItemsSortModeChange(listSortMode)
+ 
+-        isSwipeBackEnabled = presenter.isSublist
+-        return attachViewToSwipeBackLayout(contentView)
++        isSwipeBackEnabled = isSublist
+     }
+ 
+     override fun onScreenWidthDpLevelChanged(
+@@ -281,7 +300,7 @@
+ 
+     override fun onBackPressed(): Boolean {
+         mItemOptionsWindow?.dismiss()
+-                ?: if (presenter.isSublist) {
++                ?: if (mSublist) {
+                     swipeBackLayout.scrollToFinishActivityOrPopUpFragment()
+                     return true
+                 } else return false
+@@ -383,7 +402,7 @@
+                 topButton.tag = position
+                 deleteButton.tag = position
+ 
+-                separateToppedItemsFromUntoppedOnes(position)
++                separateToppedItemsFromUntoppedOnes(item.isTopped)
+ 
+                 if (mItemOptionsWindow == null) {
+                     UiUtils.setViewVisibilityAndVerify(checkBox, View.GONE)
+@@ -422,7 +441,7 @@
+                 for (payload in payloads) {
+                     if (payload !is Int) continue
+                     if (payload and PAYLOAD_CHANGE_ITEM_LPS_AND_BG != 0) {
+-                        separateToppedItemsFromUntoppedOnes(position)
++                        separateToppedItemsFromUntoppedOnes(item.isTopped)
+                     }
+                     if (payload and PAYLOAD_CHANGE_CHECKBOX_VISIBILITY != 0) {
+                         if (mItemOptionsWindow == null) {
+@@ -486,9 +505,9 @@
+             }
+         }
+ 
+-        fun separateToppedItemsFromUntoppedOnes(position: Int) {
++        fun separateToppedItemsFromUntoppedOnes(topped: Boolean) {
+             val context = contextThemedFirst
+-            if (presenter.isItemTopped(position)) {
++            if (topped) {
+                 ViewCompat.setBackground(itemVisibleFrame,
+                         ContextCompat.getDrawable(context, R.drawable.selector_topped_recycler_item))
+                 topButton.text = CANCEL_TOP
+@@ -529,19 +548,19 @@
+                         }
+                     }
+                 } else {
+-                    presenter.setItemChecked(index, !presenter.isItemChecked(index))
++                    presenter.toggleItemChecked(index)
+                 }
+             }
+ 
+             R.id.checkbox -> {
+                 val index = v.tag as Int
+-                presenter.setItemChecked(index, !presenter.isItemChecked(index))
++                presenter.toggleItemChecked(index)
+             }
+ 
+             // 置顶或取消置顶视频（目录）
+             R.id.btn_top -> {
+                 val index = v.tag as Int
+-                presenter.setItemTopped(index, !presenter.isItemTopped(index))
++                presenter.toggleItemTopped(index)
+             }
+ 
+             // 删除视频
+@@ -555,8 +574,6 @@
+ 
+                 mDeleteItemDialog!!.cancel()
+ 
+-                deleteItems(item)
+-
+                 if (onDeleteAction != null) {
+                     onDeleteAction()
+                 } else {
+@@ -580,21 +597,11 @@
+                 mDeleteItemsWindow!!.dismiss()
+                 mItemOptionsWindow?.dismiss()
+ 
+-                if (items.size == 1) {
+-                    val item = items[0]
+-
+-                    deleteItems(item)
+-
+-                    if (onDeleteAction != null) {
+-                        onDeleteAction()
+-                    } else {
+-                        presenter.deleteItem(item, false)
+-                    }
++                if (onDeleteAction != null) {
++                    onDeleteAction()
+                 } else {
+-                    deleteItems(*items)
+-
+-                    if (onDeleteAction != null) {
+-                        onDeleteAction()
++                    if (items.size == 1) {
++                        presenter.deleteItem(items[0], false)
+                     } else {
+                         presenter.deleteItems(*items, needUserConfirm = false)
+                     }
+@@ -618,16 +625,15 @@
+                 val decorView = window.decorView as ViewGroup
+                 val item = decorView.tag as VideoListItem
+                 @Suppress("UNCHECKED_CAST")
+-                val onRenameAction = decorView[0].tag as (() -> Unit)?
++                val onRenameAction = decorView[0].tag as ((String) -> Unit)?
+ 
+                 mRenameItemDialog!!.cancel()
+ 
+-                if (renameItem(item, newName, view)) {
+-                    if (onRenameAction != null) {
+-                        onRenameAction()
+-                    } else {
+-                        presenter.renameItemTo(item)
+-                    }
++                if (onRenameAction != null) {
++                    onRenameAction(newName)
++                } else {
++                    item.name = newName
++                    presenter.renameItemTo(item)
+                 }
+             }
+             R.id.btn_cancel_renameVideoListItemDialog -> mRenameItemDialog!!.cancel()
+@@ -693,9 +699,8 @@
+ 
+                 mTitleWindowFrame = View.inflate(
+                         v.context, R.layout.popup_window_main_title, null) as FrameLayout
+-                if (presenter.isSublist) {
+-                    mTitleWindowFrame!!.findViewById<TextView>(R.id.text_title).text =
+-                            presenter.listTitle
++                if (mSublist) {
++                    mTitleWindowFrame!!.findViewById<TextView>(R.id.text_title).text = mListTitle
+                 }
+                 mTitleWindowFrame!!.findViewById<View>(R.id.btn_cancel_vlow)
+                         .setOnClickListener(this)
+@@ -827,7 +832,7 @@
+                             headersCount, mAdapterWrapper.itemCount - headersCount,
+                             PAYLOAD_CHANGE_CHECKBOX_VISIBILITY or PAYLOAD_REFRESH_CHECKBOX)
+ 
+-                    val sublist = presenter.isSublist
++                    val sublist = mSublist
+                     mInteractionCallback.setLightStatus(false)
+                     isSwipeBackEnabled = sublist
+                     mInteractionCallback.setSideDrawerEnabled(!sublist)
+@@ -1013,7 +1018,7 @@
+         fadedContentView.foregroundGravity = Gravity.FILL
+     }
+ 
+-    override fun showRenameItemDialog(item: VideoListItem, onRenameAction: (() -> Unit)?) {
++    override fun showRenameItemDialog(item: VideoListItem, onRenameAction: ((String) -> Unit)?) {
+         val name = item.name
+         val postfix: String = when (item) {
+             is Video -> {
+@@ -1212,21 +1217,51 @@
+ 
+     override fun showVideosMovePage(vararg items: VideoListItem) = presenter.moveItems(*items)
+ 
+-    override fun deleteItems(vararg items: VideoListItem) {
+-        val dialog = WaitingOverlayDialog(contextThemedFirst)
+-        dialog.message = resources.getQuantityText(R.plurals.deletingVideosPleaseWait,
+-                if (items.size == 1
+-                        && (items[0] is Video || (items[0] as VideoDirectory).videoCount() == 1))
+-                    1
+-                else 1.inv())
+-        dialog.show()
+-        Executors.THREAD_POOL_EXECUTOR.execute {
+-            super.deleteItems(*items)
+-            Executors.MAIN_EXECUTOR.execute {
+-                dialog.dismiss()
++    override fun onItemsDeleteStart(vararg items: VideoListItem) {
++        if (mItemsDeletingDialog == null) {
++            val dialog = WaitingOverlayDialog(contextThemedFirst)
++            dialog.message = resources.getQuantityText(R.plurals.deletingVideosPleaseWait,
++                    if (items.size == 1
++                            && (items[0] is Video || (items[0] as VideoDirectory).videoCount() == 1))
++                        1
++                    else 1.inv())
++            dialog.show()
++            mItemsDeletingDialog = dialog
++        }
++    }
++
++    override fun onItemsDeleteFinish(vararg items: VideoListItem) {
++        val dialog = mItemsDeletingDialog
++        if (dialog != null) {
++            dialog.dismiss()
++            mItemsDeletingDialog = null
++        }
++    }
++
++    override fun onItemRenameFail(item: VideoListItem, reason: Int) {
++        when (reason) {
++            FAIL_REASON_FILE_NOT_EXIST -> {
++                showUserCancelableSnackbar(
++                        R.string.renameFailedForThisVideoDoesNotExist, Snackbar.LENGTH_SHORT)
++            }
++            FAIL_REASON_FILE_NAME_CLASHED -> {
++                showUserCancelableSnackbar(
++                        R.string.renameFailedForThatDirectoryHasSomeFileWithTheSameName,
++                        Snackbar.LENGTH_SHORT)
++            }
++            FAIL_REASON_UNKNOWN -> {
++                showUserCancelableSnackbar(R.string.renameFailed, Snackbar.LENGTH_SHORT)
+             }
+         }
+     }
++
++    override fun onItemRenameSuccess(item: VideoListItem) {
++        showUserCancelableSnackbar(R.string.renameSuccessful, Snackbar.LENGTH_SHORT)
++    }
++
++    override fun showUserCancelableSnackbar(text: CharSequence, duration: Int) {
++        UiUtils.showUserCancelableSnackbar(requireView(), text, duration)
++    }
+ 
+     interface InteractionCallback : ActionBarCallback, RefreshLayoutCallback {
+         fun setLightStatus(light: Boolean)
+Index: app/src/main/java/com/liuzhenlin/videos/presenter/FeedbackPresenter.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/FeedbackPresenter.java b/app/src/main/java/com/liuzhenlin/videos/presenter/FeedbackPresenter.java
+--- a/app/src/main/java/com/liuzhenlin/videos/presenter/FeedbackPresenter.java	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/presenter/FeedbackPresenter.java	(date 1735239078277)
+@@ -5,7 +5,6 @@
+ 
+ package com.liuzhenlin.videos.presenter;
+ 
+-import android.content.Context;
+ import android.graphics.Bitmap;
+ import android.os.Bundle;
+ import android.view.View;
+@@ -16,281 +15,176 @@
+ 
+ import androidx.annotation.NonNull;
+ import androidx.annotation.Nullable;
+-import androidx.appcompat.content.res.AppCompatResources;
+ 
+-import com.liuzhenlin.common.Consts;
+-import com.liuzhenlin.common.utils.BitmapUtils;
+-import com.liuzhenlin.common.utils.Executors;
+ import com.liuzhenlin.common.utils.NetworkUtil;
++import com.liuzhenlin.common.utils.Synthetic;
+ import com.liuzhenlin.videos.R;
+-import com.liuzhenlin.videos.dao.FeedbackSavedPrefs;
++import com.liuzhenlin.videos.model.FeedbackRepository;
+ import com.liuzhenlin.videos.utils.MailUtil;
+ import com.liuzhenlin.videos.utils.Utils;
+ import com.liuzhenlin.videos.view.activity.IFeedbackView;
+ 
+-import java.io.File;
+-import java.util.ArrayList;
+-import java.util.Arrays;
+-import java.util.Iterator;
+-import java.util.LinkedList;
+ import java.util.List;
+ 
++import static com.liuzhenlin.common.Consts.EMPTY_STRING;
++import static com.liuzhenlin.common.Consts.EMPTY_STRING_ARRAY;
++
+ /**
+  * @author 刘振林
+  */
+-class FeedbackPresenter extends Presenter<IFeedbackView> implements IFeedbackPresenter {
+-
+-    private FeedbackSavedPrefs mFeedbackSPs;
+-    private String mSavedFeedbackText = Consts.EMPTY_STRING;
+-    private String mSavedContactWay = Consts.EMPTY_STRING;
+-    private List<String> mSavedPicturePaths;
++class FeedbackPresenter extends Presenter<IFeedbackView> implements IFeedbackPresenter,
++        FeedbackRepository.Callback, FeedbackRepository.UserFilledTextsFetcher {
+ 
+     private static final String PREFIX_MAIL_SUBJECT = "[视频反馈] ";
+-
+-    private static final String KEY_SAVED_FEEDBACK_TEXT = "ksft";
+-    private static final String KEY_SAVED_CONTACT_WAY = "kscw";
+-    private static final String KEY_SAVED_PICTURE_PATHS = "kspp";
+-
+-    private static final String KEY_FILLED_FEEDBACK_TEXT = "kfft";
+-    private static final String KEY_FILLED_CONTACT_WAY = "kfcw";
+-    private static final String KEY_FILLED_PICTURE_PATHS = "kfpp";
+-
+-    private PictureGridAdapter mGridAdapter;
++    private static final int MAX_COUNT_UPLOAD_PICTURES = 3;
++    @Synthetic FeedbackRepository mFeedbackRepository;
++    private final PictureGridAdapter mGridAdapter = new PictureGridAdapter();
+ 
+     @Override
+     public void attachToView(@NonNull IFeedbackView view) {
+         super.attachToView(view);
+-        mFeedbackSPs = new FeedbackSavedPrefs(mContext);
+-        mGridAdapter = new PictureGridAdapter(mThemedContext);
++        mFeedbackRepository = FeedbackRepository.create(mContext, this, MAX_COUNT_UPLOAD_PICTURES);
++        mFeedbackRepository.setCallback(this);
+     }
+ 
+     @Override
+-    public void restoreData(@Nullable Bundle savedInstanceState) {
+-        if (savedInstanceState == null) {
+-            cacheCurrData(mFeedbackSPs.getText(), mFeedbackSPs.getContactWay(),
+-                    mFeedbackSPs.getPicturePaths());
+-            if (mView != null) {
+-                mView.refreshCurrTexts(mSavedFeedbackText, mSavedContactWay);
+-            }
+-            if (mSavedPicturePaths != null) {
+-                List<String> invalidPaths = null;
+-                for (String path : mSavedPicturePaths) {
+-                    // 有可能该路径下的图片已被删除：如果删除了，从sp文件中移除该保存的路径
+-                    if (!new File(path).exists()) {
+-                        if (invalidPaths == null)
+-                            invalidPaths = new LinkedList<>();
+-                        invalidPaths.add(path);
+-                        continue;
+-                    }
+-                    addPicture(path);
+-                }
+-                if (invalidPaths != null) {
+-                    mSavedPicturePaths.removeAll(invalidPaths);
+-                    mFeedbackSPs.edit().setPicturePaths(mSavedPicturePaths).apply();
+-                }
+-            }
+-        } else {
+-            String[] savedPicturePaths = (String[])
+-                    savedInstanceState.getSerializable(KEY_SAVED_PICTURE_PATHS);
+-            cacheCurrData(savedInstanceState.getString(KEY_SAVED_FEEDBACK_TEXT, Consts.EMPTY_STRING),
+-                    savedInstanceState.getString(KEY_SAVED_CONTACT_WAY, Consts.EMPTY_STRING),
+-                    savedPicturePaths == null ? null : Arrays.asList(savedPicturePaths));
+-            if (mSavedPicturePaths != null) {
+-                Iterator<String> it = mSavedPicturePaths.iterator();
+-                while (it.hasNext()) {
+-                    if (!new File(it.next()).exists()) {
+-                        it.remove();
+-                    }
+-                }
+-            }
++    public void detachFromView(@NonNull IFeedbackView view) {
++        super.detachFromView(view);
++        FeedbackRepository repository = mFeedbackRepository;
++        mFeedbackRepository = null;
++        repository.setCallback(null);
++        repository.clearPictures(true);
++    }
+ 
+-            if (mView != null) {
+-                mView.refreshCurrTexts(
+-                        savedInstanceState.getString(KEY_FILLED_FEEDBACK_TEXT, Consts.EMPTY_STRING),
+-                        savedInstanceState.getString(KEY_FILLED_CONTACT_WAY, Consts.EMPTY_STRING));
+-            }
+-            String[] picturePaths = (String[])
+-                    savedInstanceState.getSerializable(KEY_FILLED_PICTURE_PATHS);
+-            if (picturePaths != null) {
+-                for (String path : picturePaths) {
+-                    if (!new File(path).exists()) {
+-                        continue;
+-                    }
+-                    addPicture(path);
+-                }
+-            }
++    @Override
++    public void restoreInstanceState(@Nullable Bundle savedInstanceState) {
++        if (mFeedbackRepository != null) {
++            mFeedbackRepository.restoreInstanceState(savedInstanceState);
+         }
+     }
+ 
+     @Override
+-    public void saveData(@NonNull Bundle outState, @NonNull String text, @NonNull String contactWay) {
+-        outState.putString(KEY_SAVED_FEEDBACK_TEXT, mSavedFeedbackText);
+-        outState.putString(KEY_SAVED_CONTACT_WAY, mSavedContactWay);
+-        if (mSavedPicturePaths != null) {
+-            outState.putSerializable(KEY_SAVED_PICTURE_PATHS,
+-                    mSavedPicturePaths.toArray(Consts.EMPTY_STRING_ARRAY));
+-        }
+-
+-        outState.putString(KEY_FILLED_FEEDBACK_TEXT, text);
+-        outState.putString(KEY_FILLED_CONTACT_WAY, contactWay);
+-        if (!mGridAdapter.mPicturePaths.isEmpty()) {
+-            outState.putSerializable(KEY_FILLED_PICTURE_PATHS,
+-                    mGridAdapter.mPicturePaths.toArray(Consts.EMPTY_STRING_ARRAY));
++    public void saveInstanceState(@NonNull Bundle outState) {
++        if (mFeedbackRepository != null) {
++            mFeedbackRepository.saveInstanceState(outState);
+         }
+     }
+ 
+     @Override
+-    public void persistentlySaveUserFilledData(
+-            @NonNull String text, @NonNull String contactWay, boolean toastResultIfSaved) {
+-        if (hasDataChanged(text, contactWay)) {
+-            cacheCurrData(text, contactWay,
+-                    mGridAdapter.mPicturePaths.isEmpty() ?
+-                            null : new ArrayList<>(mGridAdapter.mPicturePaths));
+-
+-            mFeedbackSPs.edit()
+-                    .setText(mSavedFeedbackText)
+-                    .setContactWay(mSavedContactWay)
+-                    .setPicturePaths(mSavedPicturePaths)
+-                    .apply();
+-
+-            if (toastResultIfSaved && mView != null) {
+-                mView.toastResultOnUserFilledDataSaved();
+-            }
++    public void persistentlySaveUserFilledData(boolean toastResultIfSaved) {
++        if (mFeedbackRepository != null
++                && mFeedbackRepository.persistentlySaveUserFilledData()
++                && toastResultIfSaved && mView != null) {
++            mView.toastResultOnUserFilledDataSaved();
+         }
+     }
+ 
+-    private void cacheCurrData(String text, String contactWay, List<String> picturePaths) {
+-        mSavedFeedbackText = text;
+-        mSavedContactWay = contactWay;
+-        mSavedPicturePaths = picturePaths;
+-    }
+-
+-    @SuppressWarnings("ConstantConditions")
+     @Override
+-    public boolean hasDataChanged(@NonNull String text, @NonNull String contactWay) {
+-        if (!(text.equals(mSavedFeedbackText) && contactWay.equals(mSavedContactWay)))
+-            return true;
+-
+-        boolean arraysAreNull =
+-                mGridAdapter.mPicturePaths == null && mSavedPicturePaths == null;
+-        if (arraysAreNull) return false;
+-
+-        boolean arraysAreNonnull =
+-                !(mGridAdapter.mPicturePaths == null || mSavedPicturePaths == null);
+-        if (arraysAreNonnull) {
+-            //@formatter:off
+-            return !(mGridAdapter.mPicturePaths.isEmpty() && mSavedPicturePaths.isEmpty()
+-                    || Arrays.equals(
+-                            mGridAdapter.mPicturePaths.toArray(Consts.EMPTY_STRING_ARRAY),
+-                            mSavedPicturePaths.toArray(Consts.EMPTY_STRING_ARRAY))); //@formatter:on
++    public void onBackPressed(@NonNull OnBackPressedCallback callback) {
++        if (mFeedbackRepository != null
++                && mFeedbackRepository.hasUserFilledDataChanged()) {
++            callback.showConfirmSaveDataDialog();
+         } else {
+-            return !(mGridAdapter.mPicturePaths != null && mGridAdapter.mPicturePaths.isEmpty()
+-                    || mSavedPicturePaths != null && mSavedPicturePaths.isEmpty());
++            callback.back();
+         }
+     }
+ 
+     @Override
+-    public void sendFeedback(@NonNull String text, @NonNull String contactWay) {
++    public void sendFeedback() {
++        String text = getFeedbackText();
++        String contactWay = getContactWay();
+         if (mThemedContext != null && NetworkUtil.isNetworkConnected(mContext)) {
+             String deviceInfo = Utils.collectAppAndDeviceInfo(mContext).toString();
+             if (!deviceInfo.isEmpty()) {
+                 text += "\n\n----------------------------------------------------------------\n"
+                         + deviceInfo;
+             }
++            String[] attachmentPaths = null;
++            if (mFeedbackRepository != null) {
++                List<String> picturePaths = mFeedbackRepository.getPicturePaths();
++                attachmentPaths =
++                        picturePaths.isEmpty() ? null : picturePaths.toArray(EMPTY_STRING_ARRAY);
++            }
+             MailUtil.sendMail(
+-                    mThemedContext,
+-                    PREFIX_MAIL_SUBJECT + contactWay,
+-                    text,
+-                    null,
+-                    mGridAdapter.mPicturePaths.isEmpty() ?
+-                            null : mGridAdapter.mPicturePaths.toArray(Consts.EMPTY_STRING_ARRAY));
++                    mThemedContext, PREFIX_MAIL_SUBJECT + contactWay, text, null, attachmentPaths);
+ 
+-            // 提交反馈后，清除sp文件保存的数据
+-            mFeedbackSPs.edit().clear().apply();
+-
+-            // 重设临时缓存的数据
+-            mSavedFeedbackText = Consts.EMPTY_STRING;
+-            mSavedContactWay = Consts.EMPTY_STRING;
+-            // 刷新TextView的显示
+             if (mView != null) {
+-                mView.refreshCurrTexts(mSavedFeedbackText, mSavedContactWay);
++                mView.setFeedbackText(EMPTY_STRING);
++                mView.setContactWayText(EMPTY_STRING);
+             }
+-
+-            // 清空PictureGridAdapter的数据
+-            if (!mGridAdapter.mPicturePaths.isEmpty()) {
+-                if (mSavedPicturePaths != null) {
+-                    mSavedPicturePaths.clear();
+-                }
+-
+-                Bitmap temp = mGridAdapter.mPictures.get(mGridAdapter.mPictures.size() - 1);
+-                Iterator<Bitmap> it = mGridAdapter.mPictures.iterator();
+-                while (it.hasNext()) {
+-                    Bitmap bitmap = it.next();
+-                    if (temp == bitmap) continue;
+-                    bitmap.recycle();
+-                    it.remove();
+-                }
+-                mGridAdapter.mPicturePaths.clear();
+-                mGridAdapter.mLoadedPicturePaths.clear();
+-                // 刷新GridView
+-                mGridAdapter.notifyDataSetChanged();
++            if (mFeedbackRepository != null) {
++                mFeedbackRepository.clearPictures(false);
++                mFeedbackRepository.persistentlySaveUserFilledData();
+             }
+         } else {
+             if (mView != null) {
+                 mView.showToast(mContext, R.string.noNetworkConnection, Toast.LENGTH_SHORT);
+             }
+-            persistentlySaveUserFilledData(text, contactWay, false);
++            persistentlySaveUserFilledData(false);
++        }
++    }
++
++    @Override
++    public void onFeedbackTextChanged(@NonNull String feedbackText) {
++        if (mView != null) {
++            mView.setFeedbackText(feedbackText);
+         }
+     }
+ 
+     @Override
+-    public void addPicture(final String path) {
+-        final PictureGridAdapter gridAdapter = mGridAdapter;
+-        final List<String> picturePaths = gridAdapter.mPicturePaths;
+-        if (path != null && !picturePaths.contains(path)) {
+-            picturePaths.add(path);
+-            Executors.SERIAL_EXECUTOR.execute(() -> {
+-                if (mView == null) {
+-                    return;
+-                }
+-                final Bitmap bitmap = BitmapUtils.decodeRotatedBitmapFormFile(path);
+-                if (bitmap != null) {
+-                    Executors.MAIN_EXECUTOR.post(() -> {
+-                        if (mView != null && picturePaths.contains(path)) {
+-                            List<String> loadedPicturePaths = gridAdapter.mLoadedPicturePaths;
+-                            List<Bitmap> pictures = gridAdapter.mPictures;
+-                            loadedPicturePaths.add(loadedPicturePaths.size(), path);
+-                            pictures.add(pictures.size() - 1, bitmap);
+-                            gridAdapter.notifyDataSetChanged();
+-                        } else {
+-                            if (!gridAdapter.mPictures.contains(bitmap)) {
+-                                bitmap.recycle();
+-                            }
+-                        }
+-                    });
+-                }
+-            });
++    public void onContactWayChanged(@NonNull String contactWay) {
++        if (mView != null) {
++            mView.setContactWayText(contactWay);
++        }
++    }
++
++    @NonNull
++    @Override
++    public String getFeedbackText() {
++        return mView == null ? EMPTY_STRING : mView.getFeedbackText();
++    }
++
++    @NonNull
++    @Override
++    public String getContactWay() {
++        return mView == null ? EMPTY_STRING : mView.getContactWay();
++    }
++
++    @Override
++    public void addPicture(@Nullable String path) {
++        if (mFeedbackRepository != null) {
++            mFeedbackRepository.addPicture(path);
+         }
+     }
++
++    @Override
++    public void onPictureAdded(@NonNull Bitmap picture) {
++        mGridAdapter.notifyDataSetChanged();
++    }
+ 
+     @Override
+     public void removePictureAt(int index) {
++        if (mFeedbackRepository != null) {
++            mFeedbackRepository.removePictureAt(index);
++        }
++    }
++
++    @Override
++    public void onPictureRemoved(@NonNull Bitmap picture) {
+         // 图片全部被删除时，销毁对话框
+-        if (mView != null && mGridAdapter.mPictures.size() == 2) {
++        if (mView != null && mFeedbackRepository != null
++                && mFeedbackRepository.getPictures().size() == 1) {
+             mView.hidePicturePreviewDialog();
+         }
+-        mGridAdapter.mPictures.get(index).recycle();
+-        mGridAdapter.mPictures.remove(index);
+-        mGridAdapter.mPicturePaths.remove(mGridAdapter.mLoadedPicturePaths.remove(index));
+         mGridAdapter.notifyDataSetChanged();
+     }
+ 
+     @Override
+-    public void recyclePictures() {
+-        for (Bitmap bitmap : mGridAdapter.mPictures) {
+-            bitmap.recycle();
++    public void onPictureCleared() {
++        if (mView != null) {
++            mView.hidePicturePreviewDialog();
+         }
+-        mGridAdapter.mPictures.clear();
++        mGridAdapter.notifyDataSetChanged();
+     }
+ 
+     @NonNull
+@@ -303,27 +197,18 @@
+     private final class PictureGridAdapter extends BaseAdapter
+             implements AdapterView.OnItemClickListener {
+ 
+-        final List<Bitmap> mPictures = new ArrayList<>(MAX_COUNT_UPLOAD_PICTURES + 1);
+-        final List<String> mPicturePaths = new LinkedList<>();
+-        final List<String> mLoadedPicturePaths = new LinkedList<>();
+-
+-        static final int MAX_COUNT_UPLOAD_PICTURES = 3;
+-
+-        PictureGridAdapter(@NonNull Context context) {
+-            //noinspection ConstantConditions
+-            mPictures.add(BitmapUtils.drawableToBitmap(
+-                    AppCompatResources.getDrawable(context, R.drawable.ic_add_photo_gray_36dp)));
++        PictureGridAdapter() {
+         }
+ 
+         @Override
+         public int getCount() {
+-            int count = mPictures.size();
++            int count = mFeedbackRepository == null ? 0 : mFeedbackRepository.getPictures().size();
+             return Math.min(count, MAX_COUNT_UPLOAD_PICTURES);
+         }
+ 
+         @Override
+         public Object getItem(int position) {
+-            return mPictures.get(position);
++            return mFeedbackRepository.getPictures().get(position);
+         }
+ 
+         @Override
+@@ -334,18 +219,17 @@
+         @Override
+         public View getView(int position, View convertView, ViewGroup parent) {
+             return mView.getPictureGridViewHolder(position, convertView, parent,
+-                    mPictures.get(position), mPictures.size()).itemView;
++                    (Bitmap) getItem(position), mFeedbackRepository.getPictures().size()).itemView;
+         }
+ 
+         @Override
+         public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+-            int pictureCount = mPictures.size();
+-            if (position == pictureCount - 1) {
+-                if (mPicturePaths.size() < PictureGridAdapter.MAX_COUNT_UPLOAD_PICTURES) {
+-                    mView.pickPicture();
+-                }
++            List<Bitmap> pictures = mFeedbackRepository.getPictures();
++            int pictureCount = pictures.size();
++            if (position == pictureCount - 1 && pictureCount <= MAX_COUNT_UPLOAD_PICTURES) {
++                mView.pickPicture();
+             } else {
+-                mView.showPicturePreviewDialog(mPictures.subList(0, pictureCount - 1), position);
++                mView.showPicturePreviewDialog(pictures.subList(0, pictureCount - 1), position);
+             }
+         }
+     }
+Index: app/src/main/java/com/liuzhenlin/videos/model/VideoRepositoryImpl.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/model/VideoRepositoryImpl.java b/app/src/main/java/com/liuzhenlin/videos/model/VideoRepositoryImpl.java
+new file mode 100644
+--- /dev/null	(date 1735239078301)
++++ b/app/src/main/java/com/liuzhenlin/videos/model/VideoRepositoryImpl.java	(date 1735239078301)
+@@ -0,0 +1,230 @@
++/*
++ * Created on 2024-12-23 10:05:28 PM.
++ * Copyright © 2024 刘振林. All rights reserved.
++ */
++
++package com.liuzhenlin.videos.model;
++
++import android.content.Context;
++import android.content.Intent;
++import android.net.Uri;
++import android.os.Bundle;
++import android.os.Parcelable;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++import com.bumptech.glide.util.Synthetic;
++import com.liuzhenlin.common.utils.FileUtils;
++import com.liuzhenlin.videos.Consts;
++import com.liuzhenlin.videos.bean.Video;
++import com.liuzhenlin.videos.dao.VideoListItemDao;
++
++import java.io.Serializable;
++
++import static com.liuzhenlin.common.Consts.NO_ID;
++
++class VideoRepositoryImpl extends BaseRepository<VideoRepository.Callback>
++        implements VideoRepository {
++
++    @Synthetic Video[] mVideos;
++    @Synthetic int mVideoIndex = -1;
++
++    private static final String KEY_VIDEO_INDEX = "kvi";
++
++    public VideoRepositoryImpl(@NonNull Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean initPlaylist(@Nullable Bundle savedInstanceState, @NonNull Intent intent) {
++        final boolean stateRestore = savedInstanceState != null;
++        Video video;
++
++        Parcelable[] parcelables = intent.getParcelableArrayExtra(Consts.KEY_VIDEOS);
++        if (parcelables != null) {
++            final int length = parcelables.length;
++            if (length > 0) {
++                mVideos = new Video[length];
++                for (int i = 0; i < length; i++) {
++                    video = (Video) parcelables[i];
++                    if (stateRestore) {
++                        video.setProgress(
++                                VideoListItemDao.getSingleton(mContext).getVideoProgress(video.getId()));
++                    }
++                    mVideos[i] = video;
++                }
++                if (stateRestore) {
++                    mVideoIndex = savedInstanceState.getInt(KEY_VIDEO_INDEX);
++                } else {
++                    mVideoIndex = intent.getIntExtra(Consts.KEY_SELECTION, 0);
++                    if (mVideoIndex < 0 || mVideoIndex >= length) {
++                        mVideoIndex = 0;
++                    }
++                }
++                return true;
++            }
++            return false;
++        }
++
++        video = intent.getParcelableExtra(Consts.KEY_VIDEO);
++        if (video != null) {
++            if (stateRestore) {
++                video.setProgress(
++                        VideoListItemDao.getSingleton(mContext).getVideoProgress(video.getId()));
++            }
++            mVideos = new Video[]{video};
++            mVideoIndex = 0;
++            return true;
++        }
++
++        Parcelable[] videoUriParcels = (Parcelable[])
++                intent.getSerializableExtra(Consts.KEY_VIDEO_URIS);
++        Serializable[] videoTitleSerials = (Serializable[])
++                intent.getSerializableExtra(Consts.KEY_VIDEO_TITLES);
++        if (videoUriParcels != null) {
++            final int length = videoUriParcels.length;
++            if (length > 0) {
++                mVideos = new Video[length];
++                for (int i = 0; i < length; i++) {
++                    video = buildVideoForUri((Uri) videoUriParcels[i],
++                            (String) (videoTitleSerials != null ? videoTitleSerials[i] : null));
++                    if (stateRestore && video.getId() != NO_ID) {
++                        video.setProgress(
++                                VideoListItemDao.getSingleton(mContext).getVideoProgress(video.getId()));
++                    }
++                    mVideos[i] = video;
++                }
++                if (stateRestore) {
++                    mVideoIndex = savedInstanceState.getInt(KEY_VIDEO_INDEX);
++                } else {
++                    mVideoIndex = intent.getIntExtra(Consts.KEY_SELECTION, 0);
++                    if (mVideoIndex < 0 || mVideoIndex >= length) {
++                        mVideoIndex = 0;
++                    }
++                }
++                return true;
++            }
++            return false;
++        }
++
++        Uri uri = intent.getData();
++        if (uri == null) {
++            uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
++            if (uri == null) {
++                CharSequence uriCharSequence = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
++                if (uriCharSequence != null) {
++                    uri = Uri.parse(uriCharSequence.toString());
++                }
++            }
++        }
++        if (uri != null) {
++            video = buildVideoForUri(uri, intent.getStringExtra(Consts.KEY_VIDEO_TITLE));
++            if (stateRestore && video.getId() != NO_ID) {
++                video.setProgress(
++                        VideoListItemDao.getSingleton(mContext).getVideoProgress(video.getId()));
++            }
++            mVideos = new Video[]{video};
++            mVideoIndex = 0;
++            return true;
++        }
++
++        return false;
++    }
++
++    private Video buildVideoForUri(Uri uri, String videoTitle) {
++        String videoUrl = FileUtils.UriResolver.getPath(mContext, uri);
++        if (videoUrl == null) {
++            videoUrl = uri.toString();
++        }
++
++        Video video = VideoListItemDao.getSingleton(mContext).queryVideoByPath(videoUrl);
++        if (video == null) {
++            video = new Video();
++            video.setId(NO_ID);
++            video.setPath(videoUrl);
++            if (videoTitle != null) {
++                video.setName(videoTitle);
++            } else {
++                video.setName(FileUtils.getFileNameFromFilePath(videoUrl));
++            }
++        }
++        return video;
++    }
++
++    @Override
++    public void saveInstanceState(@NonNull Bundle outState) {
++        outState.putInt(KEY_VIDEO_INDEX, mVideoIndex);
++    }
++
++    @Nullable
++    @Override
++    public Video[] getVideos() {
++        return mVideos;
++    }
++
++    @Nullable
++    @Override
++    public Video getCurrentVideo() {
++        return mVideos == null ? null : mVideos[mVideoIndex];
++    }
++
++    @Override
++    public int getVideoIndex() {
++        return mVideoIndex;
++    }
++
++    @Override
++    public void setVideoIndex(int index) {
++        if (mVideos != null) {
++            int oldIndex = mVideoIndex;
++            if (oldIndex != index) {
++                mVideoIndex = index;
++                if (mCallback != null) {
++                    mCallback.onVideoIndexChanged(oldIndex, index);
++                }
++            }
++        }
++    }
++
++    @Override
++    public void setVideoProgress(@NonNull Video video, int progress, boolean updateDB) {
++        video.setProgress(progress);
++        if (updateDB) {
++            final long id = video.getId();
++            if (id != NO_ID) {
++                VideoListItemDao.getSingleton(mContext).setVideoProgress(id, video.getProgress());
++            }
++        }
++    }
++
++    @Override
++    public void moveVideoIndexBackward() {
++        if (mVideos != null) {
++            final int oldVideoIndex = mVideoIndex;
++            if (oldVideoIndex == 0) {
++                mVideoIndex = mVideos.length - 1;
++            } else {
++                --mVideoIndex;
++            }
++            if (mCallback != null) {
++                mCallback.onVideoIndexChanged(oldVideoIndex, mVideoIndex);
++            }
++        }
++    }
++
++    @Override
++    public void moveVideoIndexForward() {
++        if (mVideos != null) {
++            final int oldVideoIndex = mVideoIndex;
++            if (oldVideoIndex == mVideos.length - 1) {
++                mVideoIndex = 0;
++            } else {
++                ++mVideoIndex;
++            }
++            if (mCallback != null) {
++                mCallback.onVideoIndexChanged(oldVideoIndex, mVideoIndex);
++            }
++        }
++    }
++}
+Index: app/src/main/java/com/liuzhenlin/videos/presenter/LocalVideoListPresenter.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/LocalVideoListPresenter.kt b/app/src/main/java/com/liuzhenlin/videos/presenter/LocalVideoListPresenter.kt
+--- a/app/src/main/java/com/liuzhenlin/videos/presenter/LocalVideoListPresenter.kt	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/presenter/LocalVideoListPresenter.kt	(date 1735244302058)
+@@ -30,14 +30,9 @@
+ import kotlin.math.abs
+ import kotlin.math.min
+ 
+-interface ILocalVideoListPresenter : IPresenter<ILocalVideoListView>, ILocalVideoListModel.Callback,
++interface ILocalVideoListPresenter : IPresenter<ILocalVideoListView>,
+         OnVideoListItemsLoadListener {
+ 
+-    public val isSublist: Boolean
+-    public val listTitle: String?
+-    public val listTitleDesc: String?
+-    @SortMode public val listSortMode: Int
+-
+     fun setArgsForLocalSearchedVideosFragment(localSearchedVideosFragment: Fragment)
+ 
+     fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?)
+@@ -48,11 +43,10 @@
+     fun startLoadVideos()
+     fun stopLoadVideos()
+ 
+-    fun isItemChecked(index: Int): Boolean
+     fun setItemChecked(index: Int, checked: Boolean)
++    fun toggleItemChecked(index: Int)
+ 
+-    fun isItemTopped(index: Int): Boolean
+-    fun setItemTopped(index: Int, topped: Boolean)
++    fun toggleItemTopped(index: Int)
+ 
+     fun playVideoAt(index: Int)
+     fun openVideoDirectoryAt(index: Int)
+@@ -73,8 +67,6 @@
+ 
+     fun reorderAllItems(@SortMode sortMode: Int)
+ 
+-    fun getVideoListAdapter(): HeaderAndFooterWrapper<out ILocalVideoListView.VideoListViewHolder>
+-
+     abstract class VideoListAdapter<VH : ILocalVideoListView.VideoListViewHolder>
+         : ImageLoadingListAdapter<VH>() {
+ 
+@@ -95,15 +87,12 @@
+     }
+ }
+ 
+-class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoListPresenter {
++class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoListPresenter,
++        ILocalVideoListModel.Callback {
+ 
+-    override val isSublist: Boolean
++    private val mSublist: Boolean
+         get() = mModel.parentVideoDir != null
+-    override val listTitle: String?
+-        get() = mModel.parentVideoDir?.name
+-    override val listTitleDesc: String?
+-        get() = mModel.parentVideoDir?.path
+-    override val listSortMode: Int
++    private val mListSortMode: Int
+         get() = mModel.itemsSortMode
+ 
+     private var mViewsCreated = false
+@@ -125,11 +114,6 @@
+         mParent = parent
+     }
+ 
+-    override fun getVideoListAdapter()
+-            : HeaderAndFooterWrapper<out ILocalVideoListView.VideoListViewHolder> {
+-        return mAdapterWrapper
+-    }
+-
+     override fun attachToView(view: ILocalVideoListView) {
+         super.attachToView(view)
+         if (view.getArguments()?.containsKey(KEY_VIDEODIR) == true) {
+@@ -154,7 +138,7 @@
+ 
+     override fun detachFromView(view: ILocalVideoListView) {
+         super.detachFromView(view)
+-        if (isSublist) {
++        if (mSublist) {
+             view.onReturnResult(
+                     RESULT_CODE_LOCAL_VIDEO_SUBLIST_FRAGMENT,
+                     Intent().putExtra(KEY_VIDEODIR, mModel.parentVideoDir))
+@@ -162,9 +146,15 @@
+         mModel.setCallback(null)
+     }
+ 
++    override fun onViewCreated(view: ILocalVideoListView) {
++        super.onViewCreated(view)
++        view.init(mSublist, mModel.parentVideoDir?.name, mModel.parentVideoDir?.path,
++                mListSortMode, mAdapterWrapper)
++    }
++
+     override fun onViewStart(view: ILocalVideoListView) {
+         super.onViewStart(view)
+-        if (!isSublist) {
++        if (!mSublist) {
+             mModel.stopWatchingVideos(true)
+             // Make sure to load the videos after all restored Fragments have created their views,
+             // otherwise the application will crash when the video loading callback is sent to one
+@@ -178,7 +168,7 @@
+ 
+     override fun onViewStopped(view: ILocalVideoListView) {
+         super.onViewStopped(view)
+-        if (!isSublist && !view.isDestroying) {
++        if (!mSublist && !view.isDestroying) {
+             mModel.startWatchingVideos()
+         }
+     }
+@@ -186,7 +176,7 @@
+     override fun onViewDestroyed(view: ILocalVideoListView) {
+         super.onViewDestroyed(view)
+         mViewsCreated = false
+-        if (!isSublist)
++        if (!mSublist)
+             mModel.stopWatchingVideos(false)
+         stopLoadVideos()
+     }
+@@ -228,7 +218,7 @@
+                     videoItems.search(predicate)
+                     items
+                 }
+-        mModel.setVideoListItems(items?.reordered(listSortMode))
++        mModel.setVideoListItems(items?.reordered(mListSortMode))
+         mView?.onVideosLoadFinish()
+     }
+ 
+@@ -287,14 +277,14 @@
+         }
+     }
+ 
+-    override fun isItemChecked(index: Int) = mModel.videoListItems[index].isChecked
+-
+     override fun setItemChecked(index: Int, checked: Boolean) =
+             mModel.setItemChecked(index, checked)
+ 
+-    override fun isItemTopped(index: Int) = mModel.videoListItems[index].isTopped
++    override fun toggleItemChecked(index: Int) =
++            mModel.setItemChecked(index, !mModel.videoListItems[index].isChecked)
+ 
+-    override fun setItemTopped(index: Int, topped: Boolean) = mModel.setItemTopped(index, topped)
++    override fun toggleItemTopped(index: Int) =
++            mModel.setItemTopped(index, !mModel.videoListItems[index].isTopped)
+ 
+     override fun playVideoAt(index: Int) {
+         val videoListItems = mModel.videoListItems
+@@ -306,7 +296,7 @@
+             if (i == index)
+                 selection = videos.size
+             if (item is Video) {
+-                if (isSublist
++                if (mSublist
+                         || dirPath == item.path.substring(0, item.path.lastIndexOf(File.separatorChar))) {
+                     videos.add(item)
+                 }
+@@ -332,7 +322,7 @@
+         if (needUserConfirm) {
+             mView?.showDeleteItemDialog(item)
+         } else {
+-            mModel.deleteItem(item)
++            mModel.deleteItem(item, mView)
+         }
+     }
+ 
+@@ -371,7 +361,7 @@
+         if (needUserConfirm) {
+             mView?.showDeleteItemsPopupWindow(*items)
+         } else {
+-            mModel.deleteItems(*items)
++            mModel.deleteItems(*items, listener = mView)
+         }
+     }
+ 
+@@ -383,7 +373,7 @@
+         mView?.showRenameItemDialog(item)
+     }
+ 
+-    override fun renameItemTo(item: VideoListItem) = mModel.renameItemTo(item)
++    override fun renameItemTo(item: VideoListItem) = mModel.renameItemTo(item, mView)
+ 
+     override fun shareCheckedVideo() {
+         mView.shareVideo(mModel.checkedItems?.get(0) as? Video ?: return)
+Index: app/src/main/java/com/liuzhenlin/videos/model/BaseRepository.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/model/BaseRepository.java b/app/src/main/java/com/liuzhenlin/videos/model/BaseRepository.java
+new file mode 100644
+--- /dev/null	(date 1735239078190)
++++ b/app/src/main/java/com/liuzhenlin/videos/model/BaseRepository.java	(date 1735239078190)
+@@ -0,0 +1,27 @@
++/*
++ * Created on 2024-12-23 9:17:12 PM.
++ * Copyright © 2024 刘振林. All rights reserved.
++ */
++
++package com.liuzhenlin.videos.model;
++
++import android.content.Context;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++public abstract class BaseRepository<C extends Repository.Callback> implements Repository<C> {
++
++    protected final Context mContext;
++
++    @Nullable protected C mCallback;
++
++    public BaseRepository(@NonNull Context context) {
++        mContext = context.getApplicationContext();
++    }
++
++    @Override
++    public void setCallback(@Nullable C callback) {
++        mCallback = callback;
++    }
++}
+Index: app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoListItemOps.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoListItemOps.kt b/app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoListItemOps.kt
+--- a/app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoListItemOps.kt	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoListItemOps.kt	(date 1735242229636)
+@@ -9,15 +9,12 @@
+ import android.content.Context
+ import android.content.Intent
+ import android.net.Uri
+-import android.view.View
+-import android.widget.Toast
++import androidx.annotation.IntDef
+ import androidx.fragment.app.Fragment
+ import com.bumptech.glide.util.Preconditions
+-import com.google.android.material.snackbar.Snackbar
+ import com.liuzhenlin.common.utils.FileUtils
+ import com.liuzhenlin.common.utils.ShareUtils
+ import com.liuzhenlin.common.utils.URLUtils
+-import com.liuzhenlin.common.utils.UiUtils
+ import com.liuzhenlin.videos.*
+ import com.liuzhenlin.videos.bean.Video
+ import com.liuzhenlin.videos.bean.VideoDirectory
+@@ -30,11 +27,39 @@
+  * @author 刘振林
+  */
+ 
+-private fun deleteItemsInternal(items: Array<out VideoListItem>) {
+-    if (items.isEmpty()) return
++const val FAIL_REASON_FILE_NOT_EXIST = 1     // 不存在该文件
++const val FAIL_REASON_FILE_NAME_CLASHED = 2  // 该路径下存在相同名称的文件
++const val FAIL_REASON_UNKNOWN = 3            // 未知原因
++
++@IntDef(FAIL_REASON_FILE_NOT_EXIST, FAIL_REASON_FILE_NAME_CLASHED, FAIL_REASON_UNKNOWN)
++@Retention(AnnotationRetention.SOURCE)
++annotation class RenameFailReason
++
++interface VideoListItemDeleteOnDiskListener<in T : VideoListItem> {
++    fun onItemsDeleteStart(vararg items: T)
++    fun onItemsDeleteFinish(vararg items: T)
++}
++
++interface VideoListItemRenameResultCallback<in T : VideoListItem> {
++    fun onItemRenameFail(item: T, @RenameFailReason reason: Int)
++    fun onItemRenameSuccess(item: T)
++}
++
++interface VideoListItemOpCallback<in T : VideoListItem> : VideoListItemDeleteOnDiskListener<T>,
++        VideoListItemRenameResultCallback<T> {
++
++    fun showDeleteItemDialog(item: T, onDeleteAction: (() -> Unit)? = null)
++    fun showDeleteItemsPopupWindow(vararg items: T, onDeleteAction: (() -> Unit)? = null)
++    fun showRenameItemDialog(item: T, onRenameAction: ((String) -> Unit)? = null)
++    fun showItemDetailsDialog(item: T)
++    fun showVideosMovePage(vararg items: T)
++}
++
++fun Array<out VideoListItem>.deleteOnDisk() {
++    if (isEmpty()) return
+ 
+     val dao = VideoListItemDao.getSingleton(App.getInstanceUnsafe()!!)
+-    deleteItemsRecursively(listOf(*items), dao)
++    deleteItemsRecursively(listOf(*this), dao)
+ }
+ 
+ private fun deleteItemsRecursively(items: List<VideoListItem>, dao: VideoListItemDao) {
+@@ -51,106 +76,53 @@
+         }
+ }
+ 
+-interface VideoListItemOpCallback<in T : VideoListItem> {
+-
+-    fun showDeleteItemDialog(item: T, onDeleteAction: (() -> Unit)? = null)
+-    fun showDeleteItemsPopupWindow(vararg items: T, onDeleteAction: (() -> Unit)? = null)
+-    fun showRenameItemDialog(item: T, onRenameAction: (() -> Unit)? = null)
+-    fun showItemDetailsDialog(item: T)
+-    fun showVideosMovePage(vararg items: T)
++fun <T : VideoListItem> T.renameTo(newName: String, callback: VideoListItemRenameResultCallback<T>?)
++        : Boolean {
++    if (newName == name) return false
+ 
+-    fun deleteItems(vararg items: T) = deleteItemsInternal(items)
++    val context: Context = App.getInstanceUnsafe()!!
+ 
+-    fun renameItem(item: T, newName: String, view: View? = null): Boolean {
+-        // 如果名称没有变化
+-        if (newName == item.name) return false
+-
+-        val context: Context = view?.context ?: App.getInstanceUnsafe()!!
+-
+-        if (item is Video) {
+-            // 如果不存在该视频文件
+-            val file = File(item.path)
++    when (this) {
++        is Video -> {
++            val file = File(path)
+             if (!file.exists()) {
+-                if (view == null) {
+-                    Toast.makeText(context, R.string.renameFailedForThisVideoDoesNotExist,
+-                            Toast.LENGTH_SHORT).show()
+-                } else {
+-                    UiUtils.showUserCancelableSnackbar(view,
+-                            R.string.renameFailedForThisVideoDoesNotExist, Snackbar.LENGTH_SHORT)
+-                }
++                callback?.onItemRenameFail(this, FAIL_REASON_FILE_NOT_EXIST)
+                 return false
+             }
+ 
+             val newFile = File(file.parent, newName)
+-            // 该路径下存在相同名称的视频文件
+-            if (!newName.equals(item.name, ignoreCase = true) && newFile.exists()) {
+-                if (view == null) {
+-                    Toast.makeText(
+-                            context,
+-                            R.string.renameFailedForThatDirectoryHasSomeFileWithTheSameName,
+-                            Toast.LENGTH_SHORT
+-                    ).show()
+-                } else {
+-                    UiUtils.showUserCancelableSnackbar(
+-                            view,
+-                            R.string.renameFailedForThatDirectoryHasSomeFileWithTheSameName,
+-                            Snackbar.LENGTH_SHORT)
+-                }
++            if (!newName.equals(name, ignoreCase = true) && newFile.exists()) {
++                callback?.onItemRenameFail(this, FAIL_REASON_FILE_NAME_CLASHED)
+                 return false
+             }
+ 
+-            // 如果重命名失败
+             if (!file.renameTo(newFile)) {
+-                if (view == null) {
+-                    Toast.makeText(context, R.string.renameFailed, Toast.LENGTH_SHORT).show()
+-                } else {
+-                    UiUtils.showUserCancelableSnackbar(
+-                            view, R.string.renameFailed, Snackbar.LENGTH_SHORT)
+-                }
++                callback?.onItemRenameFail(this, FAIL_REASON_UNKNOWN)
+                 return false
+             }
+ 
+-            item.name = newName
+-            item.path = newFile.absolutePath
+-            return if (VideoListItemDao.getSingleton(context).updateVideo(item)) {
+-                if (view == null) {
+-                    Toast.makeText(context, R.string.renameSuccessful, Toast.LENGTH_SHORT).show()
+-                } else {
+-                    UiUtils.showUserCancelableSnackbar(
+-                            view, R.string.renameSuccessful, Snackbar.LENGTH_SHORT)
+-                }
++            name = newName
++            path = newFile.absolutePath
++            return if (VideoListItemDao.getSingleton(context).updateVideo(this)) {
++                callback?.onItemRenameSuccess(this)
+                 true
+             } else {
+-                if (view == null) {
+-                    Toast.makeText(context, R.string.renameFailed, Toast.LENGTH_SHORT).show()
+-                } else {
+-                    UiUtils.showUserCancelableSnackbar(
+-                            view, R.string.renameFailed, Snackbar.LENGTH_SHORT)
+-                }
++                callback?.onItemRenameFail(this, FAIL_REASON_UNKNOWN)
+                 false
+             }
+-        } else if (item is VideoDirectory) {
+-            item.name = newName
+-            return if (VideoListItemDao.getSingleton(context).updateVideoDir(item)) {
+-                if (view == null) {
+-                    Toast.makeText(context, R.string.renameSuccessful, Toast.LENGTH_SHORT).show()
+-                } else {
+-                    UiUtils.showUserCancelableSnackbar(
+-                            view, R.string.renameSuccessful, Snackbar.LENGTH_SHORT)
+-                }
++        }
++        is VideoDirectory -> {
++            name = newName
++            return if (VideoListItemDao.getSingleton(context).updateVideoDir(this)) {
++                callback?.onItemRenameSuccess(this)
+                 true
+             } else {
+-                if (view == null) {
+-                    Toast.makeText(context, R.string.renameFailed, Toast.LENGTH_SHORT).show()
+-                } else {
+-                    UiUtils.showUserCancelableSnackbar(
+-                            view, R.string.renameFailed, Snackbar.LENGTH_SHORT)
+-                }
++                callback?.onItemRenameFail(this, FAIL_REASON_UNKNOWN)
+                 false
+             }
+         }
+-        return false
+-    }
++    }
++    return false
+ }
+ 
+ fun Any?.shareVideo(video: Video) {
+Index: app/src/main/java/com/liuzhenlin/videos/presenter/LocalSearchedVideosPresenter.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/LocalSearchedVideosPresenter.kt b/app/src/main/java/com/liuzhenlin/videos/presenter/LocalSearchedVideosPresenter.kt
+--- a/app/src/main/java/com/liuzhenlin/videos/presenter/LocalSearchedVideosPresenter.kt	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/presenter/LocalSearchedVideosPresenter.kt	(date 1735244302043)
+@@ -26,9 +26,7 @@
+ import kotlin.math.min
+ 
+ interface ILocalSearchedVideosPresenter : IPresenter<ILocalSearchedVideosView>,
+-        OnVideosLoadListener, ILocalSearchedVideoListModel.Callback {
+-
+-    public val listSortMode: Int
++        OnVideosLoadListener {
+ 
+     fun startLoadVideos()
+     fun stopLoadVideos()
+@@ -36,7 +34,7 @@
+     fun refreshList(searchTextChanged: Boolean)
+     fun sortList(sortMode: Int): Unit?
+ 
+-    fun isVideoWritable(index: Int): Boolean
++    fun showVideoOptionsMenu(index: Int, callback: ((Video) -> Unit)?)
+     fun playVideoAt(index: Int)
+     fun moveVideoAt(index: Int)
+     fun deleteVideoAt(index: Int)
+@@ -44,9 +42,6 @@
+     fun shareVideoAt(index: Int)
+     fun viewDetailsOfVideoAt(index: Int)
+ 
+-    fun getSearchedVideoListAdapter()
+-            : HeaderAndFooterWrapper<out ILocalSearchedVideosView.SearchedVideoListViewHolder>
+-
+     fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?)
+ 
+     companion object {
+@@ -58,13 +53,13 @@
+ }
+ 
+ class LocalSearchedVideosPresenter : Presenter<ILocalSearchedVideosView>(),
+-        ILocalSearchedVideosPresenter {
++        ILocalSearchedVideosPresenter, ILocalSearchedVideoListModel.Callback {
+ 
+     private val mAdapterWrapper = HeaderAndFooterWrapper(SearchedVideoListAdapter())
+ 
+     private var mModel: LocalSearchedVideoListModel? = null
+ 
+-    override val listSortMode
++    private val mListSortMode
+         get() = mModel?.searchedVideosSortMode ?: SORT_MODE_RELEVANCY_DESC
+ 
+     override fun attachToView(view: ILocalSearchedVideosView) {
+@@ -95,6 +90,11 @@
+         mModel?.setCallback(null)
+     }
+ 
++    override fun onViewCreated(view: ILocalSearchedVideosView) {
++        super.onViewCreated(view)
++        view.init(mAdapterWrapper, mListSortMode)
++    }
++
+     override fun startLoadVideos() {
+         mModel?.startLoader()
+     }
+@@ -156,7 +156,7 @@
+                 }
+             }
+         }
+-        searchedVideos.sort(listSortMode)
++        searchedVideos.sort(mListSortMode)
+         if (searchedVideos == null || searchedVideos.isEmpty()) {
+             model.clearSearchedVideos()
+         } else if (searchedVideos.size == model.searchedVideos.size) {
+@@ -235,8 +235,9 @@
+         }
+     }
+ 
+-    override fun isVideoWritable(index: Int) =
+-            mModel?.searchedVideos?.get(index)?.isWritable == true
++    override fun showVideoOptionsMenu(index: Int, callback: ((Video) -> Unit)?) {
++        callback?.invoke(mModel?.searchedVideos?.get(index) ?: return)
++    }
+ 
+     override fun playVideoAt(index: Int) {
+         mView.playVideo(mModel?.searchedVideos?.get(index) ?: return)
+@@ -248,17 +249,22 @@
+ 
+     override fun deleteVideoAt(index: Int) {
+         val video = mModel?.searchedVideos?.get(index) ?: return
+-        mView?.showDeleteItemDialog(video) {
+-            mModel?.deleteVideo(video)
++        val view = mView
++        view?.showDeleteItemDialog(video) {
++            mModel?.deleteVideo(video, view)
+         }
+     }
+ 
+     override fun renameVideoAt(index: Int) {
+         val video = mModel?.searchedVideos?.get(index) ?: return
+-        mView?.showRenameItemDialog(video) {
+-            mModel?.renameVideoTo(video,
+-                    mView?.searchText?.length
+-                            == AlgorithmUtil.lcs(video.name, mView?.searchText ?: "", true).length)
++        val view = mView
++        view?.showRenameItemDialog(video) { newName ->
++            video.name = newName
++            mModel?.renameVideoTo(
++                    video,
++                    view.searchText.length
++                            == AlgorithmUtil.lcs(video.name, view.searchText, true).length,
++                    view)
+         }
+     }
+ 
+@@ -270,8 +276,6 @@
+         mView?.showItemDetailsDialog(mModel?.searchedVideos?.get(index) ?: return)
+     }
+ 
+-    override fun getSearchedVideoListAdapter() = mAdapterWrapper
+-
+     private inner class SearchedVideoListAdapter
+         : ImageLoadingListAdapter<ILocalSearchedVideosView.SearchedVideoListViewHolder>() {
+ 
+Index: app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepositoryImpl.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepositoryImpl.java b/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepositoryImpl.java
+new file mode 100644
+--- /dev/null	(date 1735231963083)
++++ b/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepositoryImpl.java	(date 1735231963083)
+@@ -0,0 +1,282 @@
++/*
++ * Created on 2024-12-22 11:12:51 PM.
++ * Copyright © 2024 刘振林. All rights reserved.
++ */
++
++package com.liuzhenlin.videos.model;
++
++import android.content.Context;
++import android.graphics.Bitmap;
++import android.os.Bundle;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.appcompat.content.res.AppCompatResources;
++
++import com.liuzhenlin.common.Consts;
++import com.liuzhenlin.common.utils.BitmapUtils;
++import com.liuzhenlin.common.utils.Executors;
++import com.liuzhenlin.common.utils.Utils;
++import com.liuzhenlin.videos.R;
++import com.liuzhenlin.videos.bean.FeedbackInfo;
++import com.liuzhenlin.videos.dao.FeedbackSavedPrefs;
++
++import java.io.File;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Iterator;
++import java.util.LinkedList;
++import java.util.List;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++import static com.liuzhenlin.common.Consts.EMPTY_STRING;
++
++class FeedbackRepositoryImpl extends BaseRepository<FeedbackRepository.Callback>
++        implements FeedbackRepository {
++
++    private final UserFilledTextsFetcher mUserFilledTextsFetcher;
++    private final FeedbackSavedPrefs mFeedbackSPs;
++    private final FeedbackInfo mSavedFeedbackInfo;
++
++    private final List<Bitmap> mPictures;
++    private final List<String> mPicturePaths = new LinkedList<>();
++    private final List<String> mLoadedPicturePaths = new LinkedList<>();
++
++    private static final String KEY_SAVED_FEEDBACK_TEXT = "ksft";
++    private static final String KEY_SAVED_CONTACT_WAY = "kscw";
++    private static final String KEY_SAVED_PICTURE_PATHS = "kspp";
++
++    private static final String KEY_FILLED_FEEDBACK_TEXT = "kfft";
++    private static final String KEY_FILLED_CONTACT_WAY = "kfcw";
++    private static final String KEY_FILLED_PICTURE_PATHS = "kfpp";
++
++    public FeedbackRepositoryImpl(
++            @NonNull Context context, @NonNull UserFilledTextsFetcher userTextsFetcher,
++            int maxCountOfPicturesToUpload) {
++        super(context);
++        mUserFilledTextsFetcher = userTextsFetcher;
++        mFeedbackSPs = new FeedbackSavedPrefs(context);
++        mSavedFeedbackInfo = new FeedbackInfo();
++        mPictures = new ArrayList<>(maxCountOfPicturesToUpload + 1);
++        //noinspection ConstantConditions
++        mPictures.add(BitmapUtils.drawableToBitmap(
++                AppCompatResources.getDrawable(context, R.drawable.ic_add_photo_gray_36dp)));
++    }
++
++    private void cacheFeedbackInfo(String text, String contactWay, List<String> picturePaths) {
++        mSavedFeedbackInfo.setText(text);
++        mSavedFeedbackInfo.setContactWay(contactWay);
++        mSavedFeedbackInfo.setPicturePaths(picturePaths);
++    }
++
++    private void setFeedbackText(@NonNull String feedbackText) {
++        if (mCallback != null && !feedbackText.equals(mUserFilledTextsFetcher.getFeedbackText())) {
++            mCallback.onFeedbackTextChanged(feedbackText);
++        }
++    }
++
++    private void setContactWay(@NonNull String contactWay) {
++        if (mCallback != null && !contactWay.equals(mUserFilledTextsFetcher.getContactWay())) {
++            mCallback.onContactWayChanged(contactWay);
++        }
++    }
++
++    @NonNull
++    @Override
++    public List<Bitmap> getPictures() {
++        return mPictures;
++    }
++
++    @NonNull
++    @Override
++    public List<String> getPicturePaths() {
++        return mPicturePaths;
++    }
++
++    @Override
++    public void saveInstanceState(@NonNull Bundle outState) {
++        outState.putString(KEY_SAVED_FEEDBACK_TEXT, mSavedFeedbackInfo.getText());
++        outState.putString(KEY_SAVED_CONTACT_WAY, mSavedFeedbackInfo.getContactWay());
++        if (mSavedFeedbackInfo.getPicturePaths() != null) {
++            outState.putSerializable(KEY_SAVED_PICTURE_PATHS,
++                    mSavedFeedbackInfo.getPicturePaths().toArray(Consts.EMPTY_STRING_ARRAY));
++        }
++
++        outState.putString(KEY_FILLED_FEEDBACK_TEXT, mUserFilledTextsFetcher.getFeedbackText());
++        outState.putString(KEY_FILLED_CONTACT_WAY, mUserFilledTextsFetcher.getContactWay());
++        if (!mPicturePaths.isEmpty()) {
++            outState.putSerializable(KEY_FILLED_PICTURE_PATHS,
++                    mPicturePaths.toArray(Consts.EMPTY_STRING_ARRAY));
++        }
++    }
++
++    @Override
++    public void restoreInstanceState(@Nullable Bundle savedInstanceState) {
++        if (savedInstanceState == null) {
++            String feedbackText = mFeedbackSPs.getText();
++            String contactWay = mFeedbackSPs.getContactWay();
++            List<String> picturePaths = mFeedbackSPs.getPicturePaths();
++
++            cacheFeedbackInfo(feedbackText, contactWay, picturePaths);
++
++            setFeedbackText(feedbackText);
++            setContactWay(contactWay);
++            if (picturePaths != null) {
++                List<String> invalidPaths = null;
++                for (String path : picturePaths) {
++                    // 有可能该路径下的图片已被删除：如果删除了，从sp文件中移除该保存的路径
++                    if (!new File(path).exists()) {
++                        if (invalidPaths == null)
++                            invalidPaths = new LinkedList<>();
++                        invalidPaths.add(path);
++                        continue;
++                    }
++                    addPicture(path);
++                }
++                if (invalidPaths != null) {
++                    picturePaths.removeAll(invalidPaths);
++                    mFeedbackSPs.edit().setPicturePaths(picturePaths).apply();
++                }
++            }
++        } else {
++            String[] savedPicturePaths = (String[])
++                    savedInstanceState.getSerializable(KEY_SAVED_PICTURE_PATHS);
++            List<String> savedPicturePathList =
++                    savedPicturePaths == null
++                            ? null : new ArrayList<>(Arrays.asList(savedPicturePaths));
++            if (savedPicturePathList != null) {
++                Iterator<String> it = savedPicturePathList.iterator();
++                while (it.hasNext()) {
++                    if (!new File(it.next()).exists()) {
++                        it.remove();
++                    }
++                }
++            }
++            cacheFeedbackInfo(savedInstanceState.getString(KEY_SAVED_FEEDBACK_TEXT, EMPTY_STRING),
++                    savedInstanceState.getString(KEY_SAVED_CONTACT_WAY, EMPTY_STRING),
++                    savedPicturePathList);
++
++            setFeedbackText(savedInstanceState.getString(KEY_FILLED_FEEDBACK_TEXT, EMPTY_STRING));
++            setContactWay(savedInstanceState.getString(KEY_FILLED_CONTACT_WAY, EMPTY_STRING));
++            String[] picturePaths = (String[])
++                    savedInstanceState.getSerializable(KEY_FILLED_PICTURE_PATHS);
++            if (picturePaths != null) {
++                for (String path : picturePaths) {
++                    if (!new File(path).exists()) {
++                        continue;
++                    }
++                    addPicture(path);
++                }
++            }
++        }
++    }
++
++    @Override
++    public void addPicture(@Nullable String picturePath) {
++        final List<String> picturePaths = mPicturePaths;
++        if (picturePath != null && !picturePaths.contains(picturePath)) {
++            picturePaths.add(picturePath);
++            Executors.SERIAL_EXECUTOR.execute(() -> {
++                final AtomicBoolean pictureRemoved = new AtomicBoolean();
++                Utils.runOnHandlerSync(Executors.MAIN_EXECUTOR.getHandler(),
++                        () -> {
++                            if (!picturePaths.contains(picturePath)) {
++                                pictureRemoved.set(true);
++                            }
++                        });
++                if (pictureRemoved.get()) {
++                    return;
++                }
++                final Bitmap bitmap = BitmapUtils.decodeRotatedBitmapFormFile(picturePath);
++                if (bitmap != null) {
++                    Executors.MAIN_EXECUTOR.post(() -> {
++                        if (picturePaths.contains(picturePath)) {
++                            List<String> loadedPicturePaths = mLoadedPicturePaths;
++                            List<Bitmap> pictures = mPictures;
++                            loadedPicturePaths.add(loadedPicturePaths.size(), picturePath);
++                            pictures.add(pictures.size() - 1, bitmap);
++                            if (mCallback != null) {
++                                mCallback.onPictureAdded(bitmap);
++                            }
++                        } else {
++                            if (!mPictures.contains(bitmap)) {
++                                bitmap.recycle();
++                            }
++                        }
++                    });
++                }
++            });
++        }
++    }
++
++    @Override
++    public void removePictureAt(int index) {
++        Bitmap picture = mPictures.get(index);
++        picture.recycle();
++        mPictures.remove(index);
++        mPicturePaths.remove(mLoadedPicturePaths.remove(index));
++        if (mCallback != null) {
++            mCallback.onPictureRemoved(picture);
++        }
++    }
++
++    @Override
++    public void clearPictures(boolean includeAddPhotoBmp) {
++        for (int i = mPictures.size() - (includeAddPhotoBmp ? 1 : 2); i >= 0; i--) {
++            mPictures.remove(i).recycle();
++        }
++        mPicturePaths.clear();
++        mLoadedPicturePaths.clear();
++        if (mCallback != null) {
++            mCallback.onPictureCleared();
++        }
++    }
++
++    @Override
++    public boolean hasUserFilledDataChanged() {
++        return hasUserFilledDataChanged(mUserFilledTextsFetcher.getFeedbackText(),
++                mUserFilledTextsFetcher.getContactWay());
++    }
++
++    @SuppressWarnings("ConstantConditions")
++    private boolean hasUserFilledDataChanged(@NonNull String text, @NonNull String contactWay) {
++        String savedFeedbackText = mSavedFeedbackInfo.getText();
++        String savedContactWay = mSavedFeedbackInfo.getContactWay();
++        List<String> savedPicturePaths = mSavedFeedbackInfo.getPicturePaths();
++
++        if (!(text.equals(savedFeedbackText) && contactWay.equals(savedContactWay)))
++            return true;
++
++        boolean arraysAreNull = mPicturePaths == null && savedPicturePaths == null;
++        if (arraysAreNull) return false;
++
++        boolean arraysAreNonnull = !(mPicturePaths == null || savedPicturePaths == null);
++        if (arraysAreNonnull) {
++            //@formatter:off
++            return !(mPicturePaths.isEmpty() && savedPicturePaths.isEmpty()
++                    || Arrays.equals(
++                            mPicturePaths.toArray(Consts.EMPTY_STRING_ARRAY),
++                            savedPicturePaths.toArray(Consts.EMPTY_STRING_ARRAY))); //@formatter:on
++        } else {
++            return !(mPicturePaths != null && mPicturePaths.isEmpty()
++                    || savedPicturePaths != null && savedPicturePaths.isEmpty());
++        }
++    }
++
++    @Override
++    public boolean persistentlySaveUserFilledData() {
++        String text = mUserFilledTextsFetcher.getFeedbackText();
++        String contactWay = mUserFilledTextsFetcher.getContactWay();
++        if (hasUserFilledDataChanged(text, contactWay)) {
++            cacheFeedbackInfo(text, contactWay,
++                    mPicturePaths.isEmpty() ? null : new ArrayList<>(mPicturePaths));
++            mFeedbackSPs.edit()
++                    .setText(mSavedFeedbackInfo.getText())
++                    .setContactWay(mSavedFeedbackInfo.getContactWay())
++                    .setPicturePaths(mSavedFeedbackInfo.getPicturePaths())
++                    .apply();
++            return true;
++        }
++        return false;
++    }
++}
+Index: app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalSearchedVideosFragment.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalSearchedVideosFragment.kt b/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalSearchedVideosFragment.kt
+--- a/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalSearchedVideosFragment.kt	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalSearchedVideosFragment.kt	(date 1735242229606)
+@@ -36,6 +36,7 @@
+ import com.bumptech.glide.Glide
+ import com.liuzhenlin.common.Configs.ScreenWidthDpLevel
+ import com.liuzhenlin.common.Consts.*
++import com.liuzhenlin.common.adapter.HeaderAndFooterWrapper
+ import com.liuzhenlin.common.adapter.ImageLoadingListAdapter
+ import com.liuzhenlin.common.utils.UiUtils
+ import com.liuzhenlin.common.utils.Utils
+@@ -52,6 +53,9 @@
+  * @author 刘振林
+  */
+ 
++typealias SearchedVideoListAdapterWrapper =
++        HeaderAndFooterWrapper<out ILocalSearchedVideosView.SearchedVideoListViewHolder>
++
+ interface ILocalSearchedVideosView : IView<ILocalSearchedVideosPresenter>,
+         VideoListItemOpCallback<Video> {
+ 
+@@ -60,6 +64,8 @@
+     fun getArguments(): Bundle?
+     fun onReturnResult(resultCode: Int, data: Intent?)
+ 
++    fun init(listAdapterWrapper: SearchedVideoListAdapterWrapper, listSortMode: Int)
++
+     fun onVideosLoadStart()
+     fun onVideosLoadFinish()
+     fun onVideosLoadCanceled()
+@@ -88,8 +94,7 @@
+     private lateinit var mSearchSrcEditText: EditText
+     private lateinit var mSearchResultTextView: TextView
+     private lateinit var mRecyclerView: RecyclerView
+-    private val mAdapterWrapper by lazy(LazyThreadSafetyMode.NONE) {
+-        presenter.getSearchedVideoListAdapter() }
++    private lateinit var mAdapterWrapper: SearchedVideoListAdapterWrapper
+     private var mSelectedItemIndex = NO_POSITION
+ 
+     internal val presenter = ILocalSearchedVideosPresenter.newInstance()
+@@ -160,11 +165,11 @@
+     override fun onCreateView(
+             inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
+         val view = inflater.inflate(R.layout.fragment_local_searched_videos, container, false)
+-        initViews(view)
+         return view
+     }
+ 
+-    private fun initViews(contentView: View) {
++    override fun init(listAdapterWrapper: SearchedVideoListAdapterWrapper, listSortMode: Int) {
++        val contentView = requireView()
+         contentView.setOnTouchListener(this)
+ 
+         val actionbar = mInteractionCallback.getActionBar(this)
+@@ -192,9 +197,10 @@
+         }
+         actionbar.findViewById<View>(R.id.btn_cancelSearch).setOnClickListener(this)
+ 
++        mAdapterWrapper = listAdapterWrapper
+         mRecyclerView = contentView.findViewById(R.id.recycler_searchedVideoList)
+         mRecyclerView.layoutManager = LinearLayoutManager(contentView.context)
+-        mRecyclerView.adapter = mAdapterWrapper.also {
++        mRecyclerView.adapter = listAdapterWrapper.also {
+             mSearchResultTextView =
+                     LayoutInflater.from(contentView.context)
+                             .inflate(R.layout.text_search_result, mRecyclerView, false) as TextView
+@@ -213,7 +219,7 @@
+ 
+         val toolbar = layoutInflater.inflate(
+                 R.layout.toolbar_local_searched_video_list, mRecyclerView, false)
+-        mAdapterWrapper.addHeaderView(toolbar)
++        listAdapterWrapper.addHeaderView(toolbar)
+         mSortByRelevancyBtn = toolbar.findViewById<TextView>(R.id.btn_sortByRelevancy)
+                 .apply { setOnClickListener(this@LocalSearchedVideosFragment) }
+         mSortByNameBtn = toolbar.findViewById<TextView>(R.id.btn_sortByName)
+@@ -222,7 +228,7 @@
+                 .apply { setOnClickListener(this@LocalSearchedVideosFragment) }
+         mSortBySizeBtn = toolbar.findViewById<TextView>(R.id.btn_sortBySize)
+                 .apply { setOnClickListener(this@LocalSearchedVideosFragment) }
+-        updateSortBtnsStates(presenter.listSortMode)
++        updateSortBtnsStates(listSortMode)
+     }
+ 
+     @SuppressLint("ClickableViewAccessibility")
+@@ -300,40 +306,44 @@
+         }
+     }
+ 
+-    override fun onLongClick(v: View) = if (v.parent === mRecyclerView) {
+-        val index = v.tag as Int
+-        val headersCount = mAdapterWrapper.headersCount
+-        val position = headersCount + index
+-        val videoWritable = presenter.isVideoWritable(index)
++    override fun onLongClick(v: View) =
++            if (v.parent === mRecyclerView) {
++                val index = v.tag as Int
++                presenter.showVideoOptionsMenu(index) { video ->
++                    val headersCount = mAdapterWrapper.headersCount
++                    val position = headersCount + index
++                    val videoWritable = video.isWritable
+ 
+-        mVideoOptionsMenu = FloatingMenu(mRecyclerView)
+-        mVideoOptionsMenu!!.inflate(R.menu.floatingmenu_video_ops)
+-        mVideoOptionsMenu!!.setItemEnabled(R.id.move,
+-                videoWritable && App.getInstance(v.context).hasAllFilesAccess())
+-        mVideoOptionsMenu!!.setItemEnabled(R.id.delete, videoWritable)
+-        mVideoOptionsMenu!!.setItemEnabled(R.id.rename, videoWritable)
+-        mVideoOptionsMenu!!.setOnItemClickListener { menuItem, _ ->
+-            when (menuItem.iconResId) {
+-                R.drawable.ic_file_move_menu -> presenter.moveVideoAt(index)
+-                R.drawable.ic_delete_24dp_menu -> presenter.deleteVideoAt(index)
+-                R.drawable.ic_edit_24dp_menu -> presenter.renameVideoAt(index)
+-                R.drawable.ic_share_24dp_menu -> presenter.shareVideoAt(index)
+-                R.drawable.ic_info_24dp_menu -> presenter.viewDetailsOfVideoAt(index)
+-            }
+-        }
+-        mVideoOptionsMenu!!.setOnDismissListener {
+-            mSelectedItemIndex = NO_POSITION
+-            mAdapterWrapper.notifyItemChanged(position, PAYLOAD_HIGHLIGHT_SELECTED_ITEM_IF_EXISTS)
+-            mVideoOptionsMenu = null
+-        }
+-        mVideoOptionsMenu!!.show(mDownX, mDownY)
++                    mVideoOptionsMenu = FloatingMenu(mRecyclerView)
++                    mVideoOptionsMenu!!.inflate(R.menu.floatingmenu_video_ops)
++                    mVideoOptionsMenu!!.setItemEnabled(R.id.move,
++                            videoWritable && App.getInstance(contextRequired).hasAllFilesAccess())
++                    mVideoOptionsMenu!!.setItemEnabled(R.id.delete, videoWritable)
++                    mVideoOptionsMenu!!.setItemEnabled(R.id.rename, videoWritable)
++                    mVideoOptionsMenu!!.setOnItemClickListener { menuItem, _ ->
++                        when (menuItem.iconResId) {
++                            R.drawable.ic_file_move_menu -> presenter.moveVideoAt(index)
++                            R.drawable.ic_delete_24dp_menu -> presenter.deleteVideoAt(index)
++                            R.drawable.ic_edit_24dp_menu -> presenter.renameVideoAt(index)
++                            R.drawable.ic_share_24dp_menu -> presenter.shareVideoAt(index)
++                            R.drawable.ic_info_24dp_menu -> presenter.viewDetailsOfVideoAt(index)
++                        }
++                    }
++                    mVideoOptionsMenu!!.setOnDismissListener {
++                        mSelectedItemIndex = NO_POSITION
++                        mAdapterWrapper.notifyItemChanged(
++                                position, PAYLOAD_HIGHLIGHT_SELECTED_ITEM_IF_EXISTS)
++                        mVideoOptionsMenu = null
++                    }
++                    mVideoOptionsMenu!!.show(mDownX, mDownY)
+ 
+-        // 高亮选中的itemView
+-        mSelectedItemIndex = index
+-        mAdapterWrapper.notifyItemChanged(position, PAYLOAD_HIGHLIGHT_SELECTED_ITEM_IF_EXISTS)
+-
+-        true
+-    } else false
++                    // 高亮选中的itemView
++                    mSelectedItemIndex = index
++                    mAdapterWrapper.notifyItemChanged(
++                            position, PAYLOAD_HIGHLIGHT_SELECTED_ITEM_IF_EXISTS)
++                }
++                true
++            } else false
+ 
+     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+         super.onViewCreated(view, savedInstanceState)
+@@ -484,7 +494,7 @@
+         mVideoOpCallback?.showDeleteItemsPopupWindow(*videos, onDeleteAction = onDeleteAction)
+     }
+ 
+-    override fun showRenameItemDialog(video: Video, onRenameAction: (() -> Unit)?) {
++    override fun showRenameItemDialog(video: Video, onRenameAction: ((String) -> Unit)?) {
+         mVideoOpCallback?.showRenameItemDialog(video, onRenameAction)
+     }
+ 
+@@ -496,6 +506,22 @@
+         mVideoOpCallback?.showVideosMovePage(*videos)
+     }
+ 
++    override fun onItemsDeleteStart(vararg videos: Video) {
++        mVideoOpCallback?.onItemsDeleteStart(*videos)
++    }
++
++    override fun onItemsDeleteFinish(vararg videos: Video) {
++        mVideoOpCallback?.onItemsDeleteStart(*videos)
++    }
++
++    override fun onItemRenameFail(video: Video, reason: Int) {
++        mVideoOpCallback?.onItemRenameFail(video, reason)
++    }
++
++    override fun onItemRenameSuccess(video: Video) {
++        mVideoOpCallback?.onItemRenameSuccess(video)
++    }
++
+     override fun newSearchedVideoListViewHolder(parent: ViewGroup)
+             : ILocalSearchedVideosView.SearchedVideoListViewHolder {
+         return SearchedVideoListViewHolder(
+Index: app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoMoveFragment.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoMoveFragment.kt b/app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoMoveFragment.kt
+--- a/app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoMoveFragment.kt	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/view/fragment/VideoMoveFragment.kt	(date 1735244302027)
+@@ -27,7 +27,6 @@
+ import com.liuzhenlin.circularcheckbox.CircularCheckBox
+ import com.liuzhenlin.common.Configs.ScreenWidthDpLevel
+ import com.liuzhenlin.common.adapter.ImageLoadingListAdapter
+-import com.liuzhenlin.common.utils.Executors
+ import com.liuzhenlin.common.windowhost.WaitingOverlayDialog
+ import com.liuzhenlin.videos.KEY_MOVED
+ import com.liuzhenlin.videos.R
+@@ -35,16 +34,23 @@
+ import com.liuzhenlin.videos.bean.Video
+ import com.liuzhenlin.videos.bean.VideoDirectory
+ import com.liuzhenlin.videos.contextThemedFirst
+-import com.liuzhenlin.videos.dao.AppPrefs
+ import com.liuzhenlin.videos.presenter.IVideoMovePresenter
+ import com.liuzhenlin.videos.utils.VideoUtils2
+ import com.liuzhenlin.videos.videoCount
+ import com.liuzhenlin.videos.view.IView
+ import com.liuzhenlin.videos.view.fragment.Payloads.PAYLOAD_REFRESH_CHECKBOX
+ 
++typealias TargetDirListAdapter = ImageLoadingListAdapter<out IVideoMoveView.TargetDirListViewHolder>
++
+ interface IVideoMoveView : IView<IVideoMovePresenter> {
+     fun getArguments(): Bundle?
+ 
++    fun init(adapter: TargetDirListAdapter, videoQuantity: Int)
++
++    fun showVideoMovePromptDialog()
++    fun onVideoMoveStart()
++    fun onVideoMoveFinish(moved: Boolean)
++
+     fun setTargetDirListItemChecked(position: Int, checked: Boolean)
+     fun onCheckedTargetDirListItemCountChanged(checkedItemCount: Int)
+ 
+@@ -66,6 +72,8 @@
+     private var mTitleText: TextView? = null
+     private var mOkayButton: View? = null
+ 
++    private var mVideoMovingDialog: Dialog? = null
++
+     private val mPresenter = IVideoMovePresenter.newInstance()
+ 
+     init {
+@@ -101,15 +109,23 @@
+     }
+ 
+     override fun onDialogCreated(dialog: Dialog) {
++        super.onDialogCreated(dialog)
++        mPresenter.onViewCreated(this)
++    }
++
++    override fun init(adapter: TargetDirListAdapter, videoQuantity: Int) {
++        val dialog = requireDialog()
++        val context = contextThemedFirst
++
+         mTitleText = dialog.findViewById(R.id.text_title)
+         mTitleText!!.text =
+-                resources.getQuantityText(R.plurals.moveVideosTo, mPresenter.videoQuantity)
++                resources.getQuantityText(R.plurals.moveVideosTo, videoQuantity)
++        mTitleText!!.tag = videoQuantity
+ 
+-        val context: Context = contextThemedFirst
+         mVideoDirList = dialog.findViewById<RecyclerView?>(R.id.recycler_videoMoveTargetList)
+                 .apply {
+                     layoutManager = LinearLayoutManager(context)
+-                    adapter = mPresenter.newTargetDirListAdapter()
++                    this.adapter = adapter
+                     addItemDecoration(DividerItemDecoration(context, DividerItemDecoration.VERTICAL))
+                     setHasFixedSize(true)
+                 }
+@@ -117,18 +133,16 @@
+         dialog.findViewById<View>(R.id.btn_cancel).setOnClickListener(this)
+         mOkayButton = dialog.findViewById(R.id.btn_ok)
+         mOkayButton!!.setOnClickListener(this)
+-
+-        mPresenter.onViewCreated(this)
+     }
+ 
+     override fun onRestoreInstanceState(savedInstanceState: Bundle?) {
+         super.onRestoreInstanceState(savedInstanceState)
+-        mPresenter.restoreData(savedInstanceState)
++        mPresenter.restoreInstanceState(savedInstanceState)
+     }
+ 
+     override fun onSaveInstanceState(outState: Bundle) {
+         super.onSaveInstanceState(outState)
+-        mPresenter.saveData(outState)
++        mPresenter.saveInstanceState(outState)
+     }
+ 
+     override fun onDismiss(dialog: DialogInterface) {
+@@ -140,64 +154,56 @@
+     }
+ 
+     override fun onClick(v: View) {
+-        val context = v.context
+-        val appPrefs = AppPrefs.getSingleton(context)
+         when (v.id) {
+-            R.id.btn_ok -> {
+-                if (!appPrefs.hasUserDeclinedVideoMovePromptDialogToBeShownAgain()) {
+-                    val promptDialog = AppCompatDialog(context, R.style.DialogStyle_MinWidth_NoTitle)
+-                    val view = View.inflate(context, R.layout.dialog_video_move_prompt, null)
+-                            .apply {
+-                                findViewById<TextView>(R.id.text_message).movementMethod =
+-                                        ScrollingMovementMethod.getInstance()
+-                                val cancelButton = findViewById<View>(R.id.btn_cancel_vmpd)
+-                                cancelButton.setOnClickListener(this@VideoMoveFragment)
+-                                cancelButton.tag = promptDialog
+-                                val okButton = findViewById<View>(R.id.btn_ok_vmpd)
+-                                okButton.setOnClickListener(this@VideoMoveFragment)
+-                                okButton.tag = promptDialog
+-                            }
+-                    promptDialog.setContentView(view)
+-                    promptDialog.show()
+-                } else {
+-                    startToMoveVideos(context)
+-                }
+-            }
+-            R.id.btn_cancel -> dismiss()
+-
+-            R.id.btn_ok_vmpd -> {
+-                val promptDialog = v.tag as AppCompatDialog
+-                val checkbox = promptDialog.findViewById<CheckBox>(R.id.checkbox)
+-                if (checkbox!!.isChecked) {
+-                    appPrefs.edit()
+-                            .setUserDeclinedVideoMovePromptDialogToBeShownAgain(true)
+-                            .apply()
+-                }
+-                promptDialog.cancel()
+-
+-                startToMoveVideos(context)
+-            }
+-            R.id.btn_cancel_vmpd -> {
+-                val promptDialog = v.tag as AppCompatDialog
+-                promptDialog.cancel()
+-            }
+-        }
++            R.id.btn_ok -> mPresenter.moveVideosToCheckedDir()
++            R.id.btn_cancel -> dismiss()
++
++            R.id.btn_ok_vmpd -> {
++                val promptDialog = v.tag as AppCompatDialog
++                val checkbox = promptDialog.findViewById<CheckBox>(R.id.checkbox)
++                val neverPromptAgain = checkbox!!.isChecked
++                promptDialog.cancel()
++                mPresenter.onVideoMovePromptConfirmed(neverPromptAgain)
++            }
++            R.id.btn_cancel_vmpd -> {
++                val promptDialog = v.tag as AppCompatDialog
++                promptDialog.cancel()
++            }
++        }
++    }
++
++    override fun showVideoMovePromptDialog() {
++        val context = contextThemedFirst
++        val promptDialog = AppCompatDialog(context, R.style.DialogStyle_MinWidth_NoTitle)
++        val view = View.inflate(context, R.layout.dialog_video_move_prompt, null)
++                .apply {
++                    findViewById<TextView>(R.id.text_message).movementMethod =
++                            ScrollingMovementMethod.getInstance()
++                    val cancelButton = findViewById<View>(R.id.btn_cancel_vmpd)
++                    cancelButton.setOnClickListener(this@VideoMoveFragment)
++                    cancelButton.tag = promptDialog
++                    val okButton = findViewById<View>(R.id.btn_ok_vmpd)
++                    okButton.setOnClickListener(this@VideoMoveFragment)
++                    okButton.tag = promptDialog
++                }
++        promptDialog.setContentView(view)
++        promptDialog.show()
+     }
+ 
+-    private fun startToMoveVideos(context: Context) {
++    override fun onVideoMoveStart() {
++        val context = contextThemedFirst
+         val waitingDialog = WaitingOverlayDialog(context)
+         waitingDialog.message =
+-                resources.getQuantityText(R.plurals.movingVideosPleaseWait, mPresenter.videoQuantity)
++                resources.getQuantityText(R.plurals.movingVideosPleaseWait, mTitleText!!.tag as Int)
+         waitingDialog.show()
+-        Executors.THREAD_POOL_EXECUTOR.execute {
+-            val moved = mPresenter.moveVideos()
+-            Executors.MAIN_EXECUTOR.execute {
+-                targetFragment?.onActivityResult(targetRequestCode, RESULT_CODE_VIDEO_MOVE_FRAGMENT,
+-                        Intent().putExtra(KEY_MOVED, moved))
+-                dismiss()
+-                waitingDialog.dismiss()
+-            }
+-        }
++        mVideoMovingDialog = waitingDialog
++    }
++
++    override fun onVideoMoveFinish(moved: Boolean) {
++        targetFragment?.onActivityResult(targetRequestCode, RESULT_CODE_VIDEO_MOVE_FRAGMENT,
++                Intent().putExtra(KEY_MOVED, moved))
++        dismiss()
++        mVideoMovingDialog?.dismiss()
+     }
+ 
+     override fun setTargetDirListItemChecked(position: Int, checked: Boolean) {
+@@ -264,7 +270,7 @@
+ 
+         override fun onClick(v: View) {
+             val position = v.tag as Int
+-            mPresenter.setTargetDirChecked(position, !mPresenter.isTargetDirChecked(position))
++            mPresenter.toggleTargetDirChecked(position)
+         }
+     }
+ }
+\ No newline at end of file
+Index: app/src/main/java/com/liuzhenlin/videos/bean/FeedbackInfo.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/bean/FeedbackInfo.java b/app/src/main/java/com/liuzhenlin/videos/bean/FeedbackInfo.java
+new file mode 100644
+--- /dev/null	(date 1735239078211)
++++ b/app/src/main/java/com/liuzhenlin/videos/bean/FeedbackInfo.java	(date 1735239078211)
+@@ -0,0 +1,85 @@
++/*
++ * Created on 2024-12-22 11:57:30 PM.
++ * Copyright © 2024 刘振林. All rights reserved.
++ */
++
++package com.liuzhenlin.videos.bean;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.core.util.ObjectsCompat;
++
++import com.liuzhenlin.common.Consts;
++
++import java.util.List;
++
++public class FeedbackInfo {
++
++    @NonNull private String text = Consts.EMPTY_STRING;
++    @NonNull private String contactWay = Consts.EMPTY_STRING;
++    @Nullable private List<String> picturePaths;
++
++    public FeedbackInfo() {
++    }
++
++    public FeedbackInfo(
++            @NonNull String text, @NonNull String contactWay, @Nullable List<String> picturePaths) {
++        this.text = text;
++        this.contactWay = contactWay;
++        this.picturePaths = picturePaths;
++    }
++
++    @NonNull
++    public String getText() {
++        return text;
++    }
++
++    public void setText(@NonNull String text) {
++        this.text = text;
++    }
++
++    @NonNull
++    public String getContactWay() {
++        return contactWay;
++    }
++
++    public void setContactWay(@NonNull String contactWay) {
++        this.contactWay = contactWay;
++    }
++
++    @Nullable
++    public List<String> getPicturePaths() {
++        return picturePaths;
++    }
++
++    public void setPicturePaths(@Nullable List<String> picturePaths) {
++        this.picturePaths = picturePaths;
++    }
++
++    @Override
++    public boolean equals(Object o) {
++        if (this == o) return true;
++
++        if (o == null || getClass() != o.getClass()) return false;
++
++        FeedbackInfo that = (FeedbackInfo) o;
++        return ObjectsCompat.equals(text, that.text)
++                && ObjectsCompat.equals(contactWay, that.contactWay)
++                && ObjectsCompat.equals(picturePaths, that.picturePaths);
++    }
++
++    @Override
++    public int hashCode() {
++        return ObjectsCompat.hash(text, contactWay, picturePaths);
++    }
++
++    @NonNull
++    @Override
++    public String toString() {
++        return "FeedbackInfo{" +
++                "text='" + text + '\'' +
++                ", contactWay='" + contactWay + '\'' +
++                ", picturePaths=" + picturePaths +
++                '}';
++    }
++}
+Index: app/src/main/java/com/liuzhenlin/videos/model/VideoMoveRepository.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/model/VideoMoveRepository.kt b/app/src/main/java/com/liuzhenlin/videos/model/VideoMoveRepository.kt
+new file mode 100644
+--- /dev/null	(date 1735242229684)
++++ b/app/src/main/java/com/liuzhenlin/videos/model/VideoMoveRepository.kt	(date 1735242229684)
+@@ -0,0 +1,259 @@
++/*
++ * Created on 2020-6-18 8:35:03 PM.
++ * Copyright © 2020 刘振林. All rights reserved.
++ */
++
++package com.liuzhenlin.videos.model
++
++import android.content.Context
++import android.os.Bundle
++import com.liuzhenlin.common.utils.Executors
++import com.liuzhenlin.common.utils.FileUtils
++import com.liuzhenlin.common.utils.LateinitProperty
++import com.liuzhenlin.common.utils.Regex
++import com.liuzhenlin.videos.KEY_SELECTION
++import com.liuzhenlin.videos.KEY_VIDEODIRS
++import com.liuzhenlin.videos.KEY_VIDEOS
++import com.liuzhenlin.videos.bean.Video
++import com.liuzhenlin.videos.bean.VideoDirectory
++import com.liuzhenlin.videos.bean.VideoListItem
++import com.liuzhenlin.videos.dao.AppPrefs
++import com.liuzhenlin.videos.dao.VideoListItemDao
++import com.liuzhenlin.videos.insertVideoDir
++import com.liuzhenlin.videos.suffix
++import com.liuzhenlin.videos.title
++import com.liuzhenlin.videos.videoCount
++import java.io.File
++
++/**
++ * @author 刘振林
++ */
++
++interface VideoMoveRepository : Repository<VideoMoveRepository.Callback> {
++
++    public val targetDirs: LateinitProperty<Array<VideoDirectory>>
++
++    public val videos: LateinitProperty<List<VideoListItem>>
++
++    public val videoQuantity: Int
++
++    fun isTargetDirChecked(index: Int): Boolean
++    fun setTargetDirChecked(index: Int, checked: Boolean)
++
++    fun needShowVideoPromptDialog(): Boolean
++    fun setVideoPromptDialogNeedBeShown(needed: Boolean)
++    fun moveVideosToCheckedDir()
++
++    interface Callback : Repository.Callback {
++        fun onTargetDirCheckedChanged(index: Int, checked: Boolean)
++        fun onCheckedTargetDirCountChanged(index: Int)
++
++        fun onVideoMoveStart()
++        fun onVideoMoveFinish(moved: Boolean)
++    }
++
++    companion object {
++        @JvmStatic
++        fun create(context: Context, args: Bundle?): VideoMoveRepository {
++            return VideoMoveRepositoryImpl(context, args)
++        }
++    }
++}
++
++private class VideoMoveRepositoryImpl(context: Context, args: Bundle?)
++    : BaseRepository<VideoMoveRepository.Callback>(context), VideoMoveRepository {
++
++    override val targetDirs = object : LateinitProperty<Array<VideoDirectory>>() {
++        override fun initialize(): Array<VideoDirectory> {
++            val targetDirs: Array<VideoDirectory?>
++            val parcels = args?.getParcelableArray(KEY_VIDEODIRS)
++            if (parcels != null) {
++                targetDirs = arrayOfNulls(parcels.size)
++                for (i in parcels.indices) {
++                    val videodir = parcels[i] as VideoDirectory
++                    videodir.isChecked = false
++                    targetDirs[i] = videodir
++                }
++            } else {
++                targetDirs = arrayOf()
++            }
++            @Suppress("UNCHECKED_CAST")
++            return targetDirs as Array<VideoDirectory>
++        }
++    }
++
++    override val videos = object : LateinitProperty<List<VideoListItem>>() {
++        override fun initialize(): List<VideoListItem> {
++            return args?.getParcelableArrayList(KEY_VIDEOS) ?: listOf()
++        }
++    }
++
++    override val videoQuantity: Int
++        get() {
++            val videos = videos.get()
++            return if (videos.size == 1
++                    && (videos[0] is Video || (videos[0] as VideoDirectory).videoCount() == 1)) {
++                1
++            } else {
++                1.inv()
++            }
++        }
++
++    override fun restoreInstanceState(savedInstanceState: Bundle?) {
++        if (savedInstanceState != null) {
++            val checkedPosition = savedInstanceState.getInt(KEY_SELECTION, -1)
++            if (checkedPosition >= 0) {
++                setTargetDirChecked(checkedPosition, true)
++            }
++        }
++    }
++
++    override fun saveInstanceState(outState: Bundle) {
++        val videodirs = targetDirs.getNoInitialize()
++        if (videodirs != null) {
++            for (index in videodirs.indices) {
++                if (videodirs[index].isChecked) {
++                    outState.putInt(KEY_SELECTION, index)
++                    return
++                }
++            }
++            outState.remove(KEY_SELECTION)
++        }
++    }
++
++    override fun isTargetDirChecked(index: Int) = targetDirs.get()[index].isChecked
++
++    override fun setTargetDirChecked(index: Int, checked: Boolean) {
++        val targetDirs = targetDirs.get()
++        if (targetDirs[index].isChecked != checked) {
++            var oldCheckedCount = 0
++            var checkedCount = 0
++            for (i in targetDirs.indices) {
++                if (i == index) {
++                    if (checked) {
++                        ++checkedCount
++                    } else {
++                        ++oldCheckedCount
++                    }
++                    mCallback?.onTargetDirCheckedChanged(index, checked)
++                } else {
++                    if (targetDirs[i].isChecked) {
++                        ++oldCheckedCount
++                        if (checked) {
++                            mCallback?.onTargetDirCheckedChanged(index, false)
++                        }
++                    }
++                }
++            }
++            if (checkedCount != oldCheckedCount) {
++                mCallback?.onCheckedTargetDirCountChanged(checkedCount)
++            }
++        }
++    }
++
++    override fun needShowVideoPromptDialog(): Boolean {
++        return AppPrefs.getSingleton(mContext).hasUserDeclinedVideoMovePromptDialogToBeShownAgain()
++    }
++
++    override fun setVideoPromptDialogNeedBeShown(needed: Boolean) {
++        AppPrefs.getSingleton(mContext).edit()
++            .setUserDeclinedVideoMovePromptDialogToBeShownAgain(needed)
++            .apply()
++    }
++
++    override fun moveVideosToCheckedDir() {
++        mCallback?.onVideoMoveStart()
++        Executors.THREAD_POOL_EXECUTOR.execute {
++            val moved = moveVideosToCheckedDirSync()
++            Executors.MAIN_EXECUTOR.execute {
++                mCallback?.onVideoMoveFinish(moved)
++            }
++        }
++    }
++
++    private fun moveVideosToCheckedDirSync(): Boolean {
++        for (videodir in targetDirs.get()) {
++            if (videodir.isChecked) {
++                var moved = false
++                val dao = VideoListItemDao.getSingleton(mContext)
++                for (video in videos.get()) {
++                    moved = if (video is VideoDirectory) {
++                        moved or moveVideoDir(video, videodir, dao)
++                    } else {
++                        val v = video as Video
++                        moved or moveVideo(v, videodir, dao)
++                    }
++                }
++                return moved
++            }
++        }
++        return false
++    }
++
++    private fun moveVideoDir(
++            videodir: VideoDirectory, targetVideoDir: VideoDirectory, dao: VideoListItemDao)
++    : Boolean {
++        val dirName = FileUtils.getFileNameFromFilePath(videodir.path)
++        val targetDirPath = targetVideoDir.path + File.separator + dirName
++        val targetDirFile = File(targetDirPath)
++        if (!targetDirFile.exists()) {
++            targetDirFile.mkdirs()
++        }
++        var targetDir = targetDirs.get().find { it.path.equals(targetDirPath, ignoreCase = true) }
++        if (targetDir == null) {
++            targetDir = dao.queryVideoDirByPath(targetDirPath)
++            if (targetDir == null) {
++                targetDir = dao.insertVideoDir(targetDirPath)
++            }
++        }
++        var moved = false
++        for (item in videodir.videoListItems) {
++            moved = if (item is VideoDirectory) {
++                moved or moveVideoDir(item, targetDir, dao)
++            } else {
++                val v = item as Video
++                moved or moveVideo(v, targetDir, dao)
++            }
++        }
++        return moved
++    }
++
++    private fun moveVideo(video: Video, videodir: VideoDirectory, dao: VideoListItemDao): Boolean {
++        val videoPath = video.path
++        for (v in videodir.videoListItems) {
++            if (v is Video && v.name.equals(video.name, ignoreCase = true)) {
++                if (v.path.equals(videoPath, ignoreCase = true))
++                    return false
++
++                var i = 1
++                var videoName: String
++                val vTitleSuffixRegex = Regex("(-\\d+)$")
++                var vTitle = v.title
++                if (vTitleSuffixRegex.find(vTitle)) {
++                    i = vTitleSuffixRegex.group()!!.substring(1).toInt() + 1
++                    vTitle = vTitle.substring(0, vTitleSuffixRegex.start())
++                }
++                outer@
++                while (true) {
++                    videoName = vTitle + '-' + i + v.suffix
++                    for (v2 in videodir.videoListItems) {
++                        if (v2 is Video) {
++                            if (v2.name.equals(videoName, ignoreCase = true)) {
++                                i++
++                                continue@outer
++                            }
++                        }
++                    }
++                    break
++                }
++                video.name = videoName
++                video.path = video.path.replaceAfterLast(File.separatorChar, video.name)
++                break
++            }
++        }
++        videodir.videoListItems.add(video)
++        video.isTopped = false
++        video.path = video.path.replaceBeforeLast(File.separatorChar, videodir.path)
++        return File(videoPath).renameTo(File(video.path)) && dao.updateVideo(video)
++    }
++}
+\ No newline at end of file
+Index: app/src/main/java/com/liuzhenlin/videos/view/activity/IFeedbackView.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/view/activity/IFeedbackView.java b/app/src/main/java/com/liuzhenlin/videos/view/activity/IFeedbackView.java
+--- a/app/src/main/java/com/liuzhenlin/videos/view/activity/IFeedbackView.java	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/view/activity/IFeedbackView.java	(date 1735239078240)
+@@ -24,7 +24,11 @@
+ 
+     void toastResultOnUserFilledDataSaved();
+ 
+-    void refreshCurrTexts(@NonNull String text, @NonNull String contactWay);
++    @NonNull String getFeedbackText();
++    void setFeedbackText(@NonNull String text);
++
++    @NonNull String getContactWay();
++    void setContactWayText(@NonNull String contactWay);
+ 
+     void pickPicture();
+ 
+Index: app/src/main/java/com/liuzhenlin/videos/model/LocalVideoListModel.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/model/LocalVideoListModel.kt b/app/src/main/java/com/liuzhenlin/videos/model/LocalVideoListModel.kt
+--- a/app/src/main/java/com/liuzhenlin/videos/model/LocalVideoListModel.kt	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/model/LocalVideoListModel.kt	(date 1735239078261)
+@@ -21,6 +21,10 @@
+ import com.liuzhenlin.videos.dao.AppPrefs
+ import com.liuzhenlin.videos.dao.IVideoDao
+ import com.liuzhenlin.videos.dao.VideoListItemDao
++import com.liuzhenlin.videos.view.fragment.VideoListItemDeleteOnDiskListener
++import com.liuzhenlin.videos.view.fragment.VideoListItemRenameResultCallback
++import com.liuzhenlin.videos.view.fragment.deleteOnDisk
++import com.liuzhenlin.videos.view.fragment.renameTo
+ import java.io.File
+ import java.util.LinkedList
+ 
+@@ -41,9 +45,10 @@
+     fun updateVideoDirectory(videodir: VideoDirectory)
+     fun setItemChecked(index: Int, checked: Boolean)
+     fun setItemTopped(index: Int, topped: Boolean)
+-    fun deleteItem(item: VideoListItem)
+-    fun deleteItems(vararg items: VideoListItem)
+-    fun renameItemTo(item: VideoListItem)
++    fun deleteItem(item: VideoListItem, listener: VideoListItemDeleteOnDiskListener<VideoListItem>?)
++    fun deleteItems(
++            vararg items: VideoListItem, listener: VideoListItemDeleteOnDiskListener<VideoListItem>?)
++    fun renameItemTo(item: VideoListItem, callback: VideoListItemRenameResultCallback<VideoListItem>?)
+     fun setAllItemsChecked()
+     fun setAllItemsUnchecked()
+     fun reorderAllItems(@SortMode sortMode: Int)
+@@ -396,7 +401,10 @@
+         }
+     }
+ 
+-    override fun deleteItem(item: VideoListItem) {
++    override fun deleteItem(
++            item: VideoListItem, listener: VideoListItemDeleteOnDiskListener<VideoListItem>?) {
++        deleteItemsOnDisk(item, listener = listener)
++
+         val index = mVideoListItems.indexOf(item)
+         if (index >= 0) {
+             mVideoListItems.removeAt(index)
+@@ -405,7 +413,21 @@
+         }
+     }
+ 
+-    override fun deleteItems(vararg items: VideoListItem) {
++    private fun deleteItemsOnDisk(vararg items: VideoListItem,
++                                  listener: VideoListItemDeleteOnDiskListener<VideoListItem>?) {
++        listener?.onItemsDeleteStart(*items)
++        Executors.THREAD_POOL_EXECUTOR.execute {
++            items.deleteOnDisk()
++            Executors.MAIN_EXECUTOR.execute {
++                listener?.onItemsDeleteFinish(*items)
++            }
++        }
++    }
++
++    override fun deleteItems(vararg items: VideoListItem,
++                             listener: VideoListItemDeleteOnDiskListener<VideoListItem>?) {
++        deleteItemsOnDisk(*items, listener = listener)
++
+         var start = -1
+         var index = 0
+         val it = mVideoListItems.iterator()
+@@ -425,9 +447,15 @@
+         }
+     }
+ 
+-    override fun renameItemTo(item: VideoListItem) {
++    override fun renameItemTo(
++            item: VideoListItem, callback: VideoListItemRenameResultCallback<VideoListItem>?) {
+         val index = mVideoListItems.indexOf(item)
+         if (index >= 0) {
++            val i = mVideoListItems[index]
++
++            if (!i.renameTo(item.name, callback))
++                return
++
+             mVideoListItems[index].name = item.name
+             val newIndex = mVideoListItems.reordered(itemsSortMode).indexOf(item)
+             if (newIndex != index) {
+Index: app/src/main/java/com/liuzhenlin/videos/model/LocalSearchedVideoListModel.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/model/LocalSearchedVideoListModel.kt b/app/src/main/java/com/liuzhenlin/videos/model/LocalSearchedVideoListModel.kt
+--- a/app/src/main/java/com/liuzhenlin/videos/model/LocalSearchedVideoListModel.kt	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/model/LocalSearchedVideoListModel.kt	(date 1735239078222)
+@@ -17,6 +17,10 @@
+ import com.liuzhenlin.videos.set
+ import com.liuzhenlin.videos.sort
+ import com.liuzhenlin.videos.sortByElementName
++import com.liuzhenlin.videos.view.fragment.VideoListItemDeleteOnDiskListener
++import com.liuzhenlin.videos.view.fragment.VideoListItemRenameResultCallback
++import com.liuzhenlin.videos.view.fragment.deleteOnDisk
++import com.liuzhenlin.videos.view.fragment.renameTo
+ 
+ /**
+  * @author 刘振林
+@@ -34,8 +38,9 @@
+     fun clearSearchedVideos()
+     fun updateSearchedVideo(index: Int, video: Video): Boolean
+     fun updateSearchedVideoProgress(video: Video)
+-    fun deleteVideo(video: Video)
+-    fun renameVideoTo(video: Video, videoNameMatchesSearchKeywords: Boolean)
++    fun deleteVideo(video: Video, listener: VideoListItemDeleteOnDiskListener<Video>?)
++    fun renameVideoTo(video: Video, videoNameMatchesSearchKeywords: Boolean,
++                      callback: VideoListItemRenameResultCallback<Video>?)
+ 
+     interface Callback : BaseModel.Callback {
+         fun onAllVideosChanged()
+@@ -113,7 +118,15 @@
+         }
+     }
+ 
+-    override fun deleteVideo(video: Video) {
++    override fun deleteVideo(video: Video, listener: VideoListItemDeleteOnDiskListener<Video>?) {
++        listener?.onItemsDeleteStart(video)
++        Executors.THREAD_POOL_EXECUTOR.execute {
++            arrayOf(video).deleteOnDisk()
++            Executors.MAIN_EXECUTOR.execute {
++                listener?.onItemsDeleteFinish(video)
++            }
++        }
++
+         mVideos.remove(video)
+ 
+         val index = mSearchedVideos.indexOf(video)
+@@ -123,22 +136,28 @@
+         }
+     }
+ 
+-    override fun renameVideoTo(video: Video, videoNameMatchesSearchKeywords: Boolean) {
++    override fun renameVideoTo(video: Video, videoNameMatchesSearchKeywords: Boolean,
++                               callback: VideoListItemRenameResultCallback<Video>?) {
+         val idx = mVideos.indexOf(video)
+         if (idx >= 0) {
+-            mVideos[idx].name = video.name
++            val v = mVideos[idx]
++
++            if (!v.renameTo(video.name, callback))
++                return
++
++            v.name = video.name
+             mVideos.sortByElementName()
+-        }
+ 
+-        val index = mSearchedVideos.indexOf(video)
+-        if (index >= 0) {
+-            mSearchedVideos[index].name = video.name
+-            if (videoNameMatchesSearchKeywords) {
+-                mSearchedVideos.sort(mSearchedVideosSortMode)
+-                mCallback?.onSearchedVideoRenamed(index, mSearchedVideos.indexOf(video))
+-            } else {
+-                mSearchedVideos.removeAt(index)
+-                mCallback?.onSearchedVideoDeleted(index)
++            val index = mSearchedVideos.indexOf(video)
++            if (index >= 0) {
++                mSearchedVideos[index].name = video.name
++                if (videoNameMatchesSearchKeywords) {
++                    mSearchedVideos.sort(mSearchedVideosSortMode)
++                    mCallback?.onSearchedVideoRenamed(index, mSearchedVideos.indexOf(video))
++                } else {
++                    mSearchedVideos.removeAt(index)
++                    mCallback?.onSearchedVideoDeleted(index)
++                }
+             }
+         }
+     }
+Index: app/src/main/java/com/liuzhenlin/videos/view/activity/VideoActivity.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/view/activity/VideoActivity.java b/app/src/main/java/com/liuzhenlin/videos/view/activity/VideoActivity.java
+--- a/app/src/main/java/com/liuzhenlin/videos/view/activity/VideoActivity.java	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/view/activity/VideoActivity.java	(date 1735242229622)
+@@ -258,47 +258,66 @@
+     protected void onCreate(Bundle savedInstanceState) {
+         super.onCreate(savedInstanceState);
+         mPresenter.attachToView(this);
+-        if (mPresenter.initPlaylist(savedInstanceState, getIntent())) {
+-            setRequestedOrientation(mScreenOrientation);
+-            setContentView(R.layout.activity_video);
+-            initViews(savedInstanceState);
+-            mPresenter.onViewCreated(this);
+-            mPrivateFlags |= PFLAG_VIEW_CREATED;
+-        } else {
+-            Activity preactivity = getPreviousActivity();
+-            if (preactivity == null) {
+-                showToast(this, R.string.cannotPlayThisVideo, Toast.LENGTH_LONG);
+-            } else {
+-                UiUtils.showUserCancelableSnackbar(preactivity.getWindow().getDecorView(),
+-                        R.string.cannotPlayThisVideo, Snackbar.LENGTH_LONG);
+-            }
+-            scrollToFinish();
+-        }
++        mPresenter.initPlaylist(savedInstanceState, getIntent(),
++                new IVideoPresenter.PlaylistInitializationCallback() {
++                    final VideoActivity _this = VideoActivity.this;
++
++                    @Override
++                    public void onInitialized(@NonNull Video[] playlist, int playlistIndex) {
++                        setRequestedOrientation(mScreenOrientation);
++                        setContentView(R.layout.activity_video);
++                        initViews(savedInstanceState, playlist, playlistIndex);
++                        mPresenter.onViewCreated(_this);
++                        mPrivateFlags |= PFLAG_VIEW_CREATED;
++                        mPresenter.playCurrentVideo();
++                    }
++
++                    @Override
++                    public void onInitializationFail() {
++                        Activity preactivity = getPreviousActivity();
++                        if (preactivity == null) {
++                            showToast(_this, R.string.cannotPlayThisVideo, Toast.LENGTH_LONG);
++                        } else {
++                            UiUtils.showUserCancelableSnackbar(preactivity.getWindow().getDecorView(),
++                                    R.string.cannotPlayThisVideo, Snackbar.LENGTH_LONG);
++                        }
++                        scrollToFinish();
++                    }
++                });
+     }
+ 
++    @SuppressLint("MissingSuperCall")
+     @Override
+     protected void onNewIntent(Intent intent) {
+-        if (mPresenter.initPlaylistAndRecordCurrentVideoProgress(null, intent)) {
+-            super.onNewIntent(intent);
+-            setIntent(intent);
++        mPresenter.initPlaylistAndRecordCurrentVideoProgress(null, intent,
++                new IVideoPresenter.PlaylistInitializationCallback() {
++                    @Override
++                    public void onInitialized(@NonNull Video[] playlist, int playlistIndex) {
++                        VideoActivity.super.onNewIntent(intent);
++                        setIntent(intent);
+ 
+-            final boolean needPlaylist = mPresenter.getPlaylistSize() > 1;
+-            //noinspection rawtypes
+-            TextureVideoView.PlayListAdapter adapter = mVideoView.getPlayListAdapter();
+-            if (needPlaylist && adapter != null) {
+-                //noinspection NotifyDataSetChanged
+-                adapter.notifyDataSetChanged();
+-            }
+-            //noinspection unchecked
+-            mVideoView.setPlayListAdapter(
+-                    needPlaylist
+-                            ? adapter == null ? mPresenter.newPlaylistAdapter() : adapter
+-                            : null);
+-            mVideoView.setCanSkipToPrevious(needPlaylist);
+-            mVideoView.setCanSkipToNext(needPlaylist);
++                        final boolean needPlaylist = playlist.length > 1;
++                        //noinspection rawtypes
++                        TextureVideoView.PlayListAdapter adapter = mVideoView.getPlayListAdapter();
++                        if (needPlaylist && adapter != null) {
++                            //noinspection NotifyDataSetChanged
++                            adapter.notifyDataSetChanged();
++                        }
++                        //noinspection unchecked
++                        mVideoView.setPlayListAdapter(
++                                needPlaylist
++                                        ? adapter == null ? mPresenter.newPlaylistAdapter() : adapter
++                                        : null);
++                        mVideoView.setCanSkipToPrevious(needPlaylist);
++                        mVideoView.setCanSkipToNext(needPlaylist);
+ 
+-            mPresenter.playCurrentVideo();
+-        }
++                        mPresenter.playCurrentVideo();
++                    }
++
++                    @Override
++                    public void onInitializationFail() {
++                    }
++                });
+     }
+ 
+     private void updateStatusBarViewHeight(int height) {
+@@ -309,7 +328,7 @@
+         }
+     }
+ 
+-    private void initViews(Bundle savedInstanceState) {
++    @Synthetic void initViews(Bundle savedInstanceState, Video[] playlist, int playlistIndex) {
+         mStatusHeight = SystemBarUtils.getStatusHeight(this);
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+             mStatusBarView = findViewById(R.id.view_statusBar);
+@@ -345,17 +364,15 @@
+         mLockUnlockOrientationButton.setOnClickListener(v ->
+                 setScreenOrientationLocked((mPrivateFlags & PFLAG_SCREEN_ORIENTATION_LOCKED) == 0));
+ 
+-        if (mPresenter.getPlaylistSize() > 1) {
++        if (playlist.length > 1) {
+             mVideoView.setPlayListAdapter(mPresenter.newPlaylistAdapter());
+             mVideoView.setCanSkipToPrevious(true);
+             mVideoView.setCanSkipToNext(true);
+         }
+         // Ensures the list scrolls to the position of the video to be played
+-        final int position = mPresenter.getCurrentVideoPositionInList();
+-        if (savedInstanceState == null && position != 0) {
+-            notifyPlaylistSelectionChanged(0, position, true);
++        if (savedInstanceState == null && playlistIndex != 0) {
++            notifyPlaylistSelectionChanged(0, playlistIndex, true);
+         }
+-        mPresenter.playCurrentVideo();
+         videoPlayer.addVideoListener(new IVideoPlayer.VideoListener() {
+             @Override
+             public void onVideoStarted() {
+@@ -431,13 +448,11 @@
+         videoPlayer.setOnSkipPrevNextListener(new VideoPlayer.OnSkipPrevNextListener() {
+             @Override
+             public void onSkipToPrevious() {
+-                mPresenter.recordCurrVideoProgress();
+                 mPresenter.skipToPreviousVideo();
+             }
+ 
+             @Override
+             public void onSkipToNext() {
+-                mPresenter.recordCurrVideoProgress();
+                 mPresenter.skipToNextVideo();
+             }
+         });
+@@ -1185,8 +1200,8 @@
+         }
+ 
+         @Override
+-        public void bindData(@NonNull Video video, int position, @NonNull List<Object> payloads) {
+-            boolean selected = position == mPresenter.getCurrentVideoPositionInList();
++        public void bindData(
++                @NonNull Video video, int position, boolean selected, @NonNull List<Object> payloads) {
+             if (payloads.isEmpty()) {
+                 highlightItemIfSelected(selected);
+                 videoNameText.setText(video.getName());
+@@ -1234,12 +1249,10 @@
+         }
+ 
+         @Override
+-        public void onItemViewClick(int position) {
+-            int videoIndex = mPresenter.getCurrentVideoPositionInList();
+-            if (videoIndex == position) {
++        public void onItemViewClick(@NonNull Video video, int position, boolean alreadySelected) {
++            if (alreadySelected) {
+                 showUserCancelableSnackbar(R.string.theVideoIsPlaying, Snackbar.LENGTH_SHORT);
+             } else {
+-                mPresenter.recordCurrVideoProgress();
+                 mPresenter.playVideoAt(position);
+             }
+         }
+@@ -1250,6 +1263,6 @@
+     @Override
+     protected void onSaveInstanceState(@NonNull Bundle outState) {
+         super.onSaveInstanceState(outState);
+-        mPresenter.saveData(outState);
++        mPresenter.saveInstanceState(outState);
+     }
+ }
+\ No newline at end of file
+Index: app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepository.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepository.java b/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepository.java
+new file mode 100644
+--- /dev/null	(date 1735239078291)
++++ b/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepository.java	(date 1735239078291)
+@@ -0,0 +1,47 @@
++/*
++ * Created on 2024-12-22 11:12:51 PM.
++ * Copyright © 2024 刘振林. All rights reserved.
++ */
++
++package com.liuzhenlin.videos.model;
++
++import android.content.Context;
++import android.graphics.Bitmap;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++
++import java.util.List;
++
++public interface FeedbackRepository extends Repository<FeedbackRepository.Callback> {
++
++    @NonNull
++    static FeedbackRepository create(
++            @NonNull Context context, @NonNull UserFilledTextsFetcher userTextsFetcher,
++            int maxCountOfPicturesToUpload) {
++        return new FeedbackRepositoryImpl(context, userTextsFetcher, maxCountOfPicturesToUpload);
++    }
++
++    @NonNull List<Bitmap> getPictures();
++    @NonNull List<String> getPicturePaths();
++
++    void addPicture(@Nullable String picturePath);
++    void removePictureAt(int index);
++    void clearPictures(boolean includeAddPhoto);
++
++    boolean hasUserFilledDataChanged();
++    boolean persistentlySaveUserFilledData();
++
++    public interface Callback extends BaseRepository.Callback {
++        void onFeedbackTextChanged(@NonNull String feedbackText);
++        void onContactWayChanged(@NonNull String contactWay);
++        void onPictureAdded(@NonNull Bitmap picture);
++        void onPictureRemoved(@NonNull Bitmap picture);
++        void onPictureCleared();
++    }
++
++    public interface UserFilledTextsFetcher {
++        @NonNull String getFeedbackText();
++        @NonNull String getContactWay();
++    }
++}
+Index: app/src/main/java/com/liuzhenlin/videos/view/activity/IVideoView.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/view/activity/IVideoView.java b/app/src/main/java/com/liuzhenlin/videos/view/activity/IVideoView.java
+--- a/app/src/main/java/com/liuzhenlin/videos/view/activity/IVideoView.java	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/view/activity/IVideoView.java	(date 1735155419377)
+@@ -45,8 +45,9 @@
+         public abstract void cancelLoadingVideoThumb();
+ 
+         public abstract void bindData(
+-                @NonNull Video video, int position, @NonNull List<Object> payloads);
++                @NonNull Video video, int position, boolean selected, @NonNull List<Object> payloads);
+ 
+-        public abstract void onItemViewClick(int position);
++        public abstract void onItemViewClick(
++                @NonNull Video video, int position, boolean alreadySelected);
+     }
+ }
+Index: app/src/main/java/com/liuzhenlin/videos/view/activity/FeedbackActivity.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/view/activity/FeedbackActivity.java b/app/src/main/java/com/liuzhenlin/videos/view/activity/FeedbackActivity.java
+--- a/app/src/main/java/com/liuzhenlin/videos/view/activity/FeedbackActivity.java	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/view/activity/FeedbackActivity.java	(date 1735239078205)
+@@ -80,7 +80,7 @@
+     private EditText mEnterContactWayEditor;
+     @Synthetic Button mCommitButton;
+ 
+-    private Dialog mConfirmSaveDataDialog;
++    @Synthetic Dialog mConfirmSaveDataDialog;
+     @Synthetic Dialog mPicturePreviewDialog;
+ 
+     @Synthetic boolean mShouldSaveDataOnDestroy;
+@@ -230,44 +230,48 @@
+ 
+         // 恢复上次退出此页面时保存的数据
+         if (savedInstanceState == null) {
+-            mPresenter.restoreData(null);
++            mPresenter.restoreInstanceState(null);
+         }
+     }
+ 
+     @Override
+     protected void onRestoreInstanceState(@NonNull Bundle savedInstanceState) {
+         super.onRestoreInstanceState(savedInstanceState);
+-        mPresenter.restoreData(savedInstanceState);
++        mPresenter.restoreInstanceState(savedInstanceState);
+     }
+ 
+     @Override
+     protected void onSaveInstanceState(@NonNull Bundle outState) {
+         super.onSaveInstanceState(outState);
+-        mPresenter.saveData(
+-                outState,
+-                mEnterProblemsOrAdviceEditor.getText().toString(),
+-                mEnterContactWayEditor.getText().toString().trim());
++        mPresenter.saveInstanceState(outState);
+     }
+ 
++    @SuppressLint("MissingSuperCall")
+     @Override
+     public void onBackPressed() {
+-        final String text = mEnterProblemsOrAdviceEditor.getText().toString();
+-        final String contactWay = mEnterContactWayEditor.getText().toString().trim();
+-        if (mPresenter.hasDataChanged(text, contactWay)) {
+-            View view = View.inflate(this, R.layout.dialog_confirm_save, null);
+-            view.<TextView>findViewById(R.id.text_message)
+-                    .setMovementMethod(ScrollingMovementMethod.getInstance());
+-            view.findViewById(R.id.btn_notSave).setOnClickListener(this);
+-            view.findViewById(R.id.btn_save).setOnClickListener(this);
++        final FeedbackActivity _this = this;
++        mPresenter.onBackPressed(new IFeedbackPresenter.OnBackPressedCallback() {
++            @Override
++            public void showConfirmSaveDataDialog() {
++                View view = View.inflate(_this, R.layout.dialog_confirm_save, null);
++                view.<TextView>findViewById(R.id.text_message)
++                        .setMovementMethod(ScrollingMovementMethod.getInstance());
++                view.findViewById(R.id.btn_notSave).setOnClickListener(_this);
++                view.findViewById(R.id.btn_save).setOnClickListener(_this);
+ 
+-            mConfirmSaveDataDialog = new AppCompatDialog(this, R.style.DialogStyle_MinWidth_NoTitle);
+-            mConfirmSaveDataDialog.setContentView(view);
+-            mConfirmSaveDataDialog.setCancelable(false);
+-            mConfirmSaveDataDialog.setCanceledOnTouchOutside(false);
+-            mConfirmSaveDataDialog.show();
+-        } else {
+-            super.onBackPressed();
+-        }
++                mConfirmSaveDataDialog =
++                        new AppCompatDialog(_this, R.style.DialogStyle_MinWidth_NoTitle);
++                mConfirmSaveDataDialog.setContentView(view);
++                mConfirmSaveDataDialog.setCancelable(false);
++                mConfirmSaveDataDialog.setCanceledOnTouchOutside(false);
++                mConfirmSaveDataDialog.show();
++            }
++
++            @Override
++            public void back() {
++                FeedbackActivity.super.onBackPressed();
++            }
++        });
+     }
+ 
+     @Override
+@@ -275,15 +279,13 @@
+         super.onDestroy();
+         // 滑动返回时默认保存数据
+         if (mShouldSaveDataOnDestroy) {
+-            saveUserFilledData(true);
++            mPresenter.persistentlySaveUserFilledData(true);
+         }
+         if (mPicturePreviewDialog != null) {
+             // 当Activity被系统杀掉时，Dialog的onDismiss()不会被调用。
+             // 在此手动调用以确保屏幕方向监听和观察刘海屏开关打开/关闭的ContentObserver能被暂停
+             mPicturePreviewDialog.dismiss();
+         }
+-        // 回收Bitmaps
+-        mPresenter.recyclePictures();
+         mPresenter.onViewDestroyed(this);
+         mPresenter.detachFromView(this);
+     }
+@@ -311,18 +313,16 @@
+                 onBackPressed();
+                 break;
+             case R.id.btn_saveFeedback:
+-                saveUserFilledData(true);
++                mPresenter.persistentlySaveUserFilledData(true);
+                 scrollToFinish();
+                 break;
+ 
+             case R.id.btn_commit:
+-                final String text = mEnterProblemsOrAdviceEditor.getText().toString();
+-                final String contactWay = mEnterContactWayEditor.getText().toString().trim();
+-                mPresenter.sendFeedback(text, contactWay);
++                mPresenter.sendFeedback();
+                 break;
+ 
+             case R.id.btn_save:
+-                saveUserFilledData(true);
++                mPresenter.persistentlySaveUserFilledData(true);
+             case R.id.btn_notSave:
+                 mConfirmSaveDataDialog.cancel();
+                 scrollToFinish();
+@@ -330,12 +330,6 @@
+         }
+     }
+ 
+-    private void saveUserFilledData(@SuppressWarnings("SameParameterValue") boolean toastResultIfSaved) {
+-        final String text = mEnterProblemsOrAdviceEditor.getText().toString();
+-        final String contactWay = mEnterContactWayEditor.getText().toString().trim();
+-        mPresenter.persistentlySaveUserFilledData(text, contactWay, toastResultIfSaved);
+-    }
+-
+     @Override
+     public void toastResultOnUserFilledDataSaved() {
+         Activity preActivity = getPreviousActivity();
+@@ -347,10 +341,26 @@
+         }
+     }
+ 
++    @NonNull
++    @Override
++    public String getFeedbackText() {
++        return mEnterProblemsOrAdviceEditor.getText().toString();
++    }
++
+     @Override
+-    public void refreshCurrTexts(@NonNull String text, @NonNull String contactWay) {
++    public void setFeedbackText(@NonNull String text) {
+         mEnterProblemsOrAdviceEditor.setText(text);
+         mEnterProblemsOrAdviceEditor.setSelection(text.length());
++    }
++
++    @NonNull
++    @Override
++    public String getContactWay() {
++        return mEnterContactWayEditor.getText().toString().trim();
++    }
++
++    @Override
++    public void setContactWayText(@NonNull String contactWay) {
+         mEnterContactWayEditor.setText(contactWay);
+     }
+ 
+Index: app/src/main/java/com/liuzhenlin/videos/presenter/IVideoPresenter.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/IVideoPresenter.java b/app/src/main/java/com/liuzhenlin/videos/presenter/IVideoPresenter.java
+--- a/app/src/main/java/com/liuzhenlin/videos/presenter/IVideoPresenter.java	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/presenter/IVideoPresenter.java	(date 1735239078245)
+@@ -13,6 +13,7 @@
+ import androidx.annotation.Nullable;
+ 
+ import com.liuzhenlin.texturevideoview.TextureVideoView;
++import com.liuzhenlin.videos.bean.Video;
+ import com.liuzhenlin.videos.view.activity.IVideoView;
+ 
+ import java.io.File;
+@@ -22,15 +23,21 @@
+  */
+ public interface IVideoPresenter extends IPresenter<IVideoView> {
+ 
+-    boolean initPlaylist(@Nullable Bundle savedInstanceState, @NonNull Intent intent);
+-    boolean initPlaylistAndRecordCurrentVideoProgress(
+-            @Nullable Bundle savedInstanceState, @NonNull Intent intent);
+-    void saveData(@NonNull Bundle outState);
++    public interface PlaylistInitializationCallback {
++        void onInitialized(@NonNull Video[] playlist, int playlistIndex);
++        void onInitializationFail();
++    }
++
++    void initPlaylist(
++            @Nullable Bundle savedInstanceState, @NonNull Intent intent,
++            @Nullable PlaylistInitializationCallback playlist);
++    void initPlaylistAndRecordCurrentVideoProgress(
++            @Nullable Bundle savedInstanceState, @NonNull Intent intent,
++            @Nullable PlaylistInitializationCallback playlist);
++    void saveInstanceState(@NonNull Bundle outState);
+ 
+     void playCurrentVideo();
+     void playVideoAt(int position);
+-    int getCurrentVideoPositionInList();
+-    int getPlaylistSize();
+ 
+     void recordCurrVideoProgress();
+     void recordCurrVideoProgressAndSetResult();
+Index: app/src/main/java/com/liuzhenlin/videos/presenter/VideoPresenter.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/VideoPresenter.java b/app/src/main/java/com/liuzhenlin/videos/presenter/VideoPresenter.java
+--- a/app/src/main/java/com/liuzhenlin/videos/presenter/VideoPresenter.java	(revision 4ae5c278a73e67e3bd459e0b411f91e3de7b543c)
++++ b/app/src/main/java/com/liuzhenlin/videos/presenter/VideoPresenter.java	(date 1735239078179)
+@@ -7,234 +7,153 @@
+ 
+ import android.content.Context;
+ import android.content.Intent;
+-import android.net.Uri;
+ import android.os.Bundle;
+-import android.os.Parcelable;
+ import android.view.ViewGroup;
+ 
+ import androidx.annotation.NonNull;
+ import androidx.annotation.Nullable;
+ 
+-import com.bumptech.glide.util.Synthetic;
+-import com.liuzhenlin.common.utils.FileUtils;
+ import com.liuzhenlin.common.utils.ShareUtils;
++import com.liuzhenlin.common.utils.Synthetic;
+ import com.liuzhenlin.texturevideoview.TextureVideoView;
+ import com.liuzhenlin.videos.Configs;
+ import com.liuzhenlin.videos.Consts;
+ import com.liuzhenlin.videos.Files;
+ import com.liuzhenlin.videos.bean.Video;
+-import com.liuzhenlin.videos.dao.VideoListItemDao;
++import com.liuzhenlin.videos.model.VideoRepository;
+ import com.liuzhenlin.videos.view.activity.IVideoView;
+ import com.liuzhenlin.videos.view.fragment.VideoListItemOpsKt;
+ 
+ import java.io.File;
+-import java.io.Serializable;
+ import java.util.List;
+ 
+-import static com.liuzhenlin.common.Consts.NO_ID;
+-
+ /**
+  * @author 刘振林
+  */
+-class VideoPresenter extends Presenter<IVideoView> implements IVideoPresenter {
++class VideoPresenter extends Presenter<IVideoView> implements IVideoPresenter,
++        VideoRepository.Callback {
+ 
+-    private static final String KEY_VIDEO_INDEX = "kvi";
++    @Synthetic VideoRepository mVideoRepository;
+ 
+-    @Synthetic Video[] mVideos;
+-    @Synthetic int mVideoIndex = -1;
++    @Override
++    public void attachToView(@NonNull IVideoView view) {
++        super.attachToView(view);
++        mVideoRepository = VideoRepository.create(mContext);
++        mVideoRepository.setCallback(this);
++    }
+ 
+     @Override
+-    public boolean initPlaylistAndRecordCurrentVideoProgress(
+-            @Nullable Bundle savedInstanceState, @NonNull Intent intent) {
+-        Video video = mVideos == null ? null : mVideos[mVideoIndex];
+-        boolean initialized = initPlaylist(savedInstanceState, intent);
+-        if (video != null) {
+-            recordVideoProgress(video);
+-        }
+-        return initialized;
+-    }
++    public void detachFromView(@NonNull IVideoView view) {
++        super.detachFromView(view);
++        mVideoRepository.setCallback(null);
++        mVideoRepository = null;
++    }
++
++    @Override
++    public void initPlaylistAndRecordCurrentVideoProgress(
++            @Nullable Bundle savedInstanceState, @NonNull Intent intent,
++            @Nullable PlaylistInitializationCallback callback) {
++        Video video = mVideoRepository == null ? null : mVideoRepository.getCurrentVideo();
++        initPlaylist(savedInstanceState, intent,
++                new PlaylistInitializationCallback() {
++                    @Override
++                    public void onInitialized(@NonNull Video[] playlist, int playlistIndex) {
++                        if (video != null) {
++                            recordVideoProgress(video);
++                        }
++                        if (callback != null) {
++                            callback.onInitialized(playlist, playlistIndex);
++                        }
++                    }
+ 
+-    @Override
+-    public boolean initPlaylist(@Nullable Bundle savedInstanceState, @NonNull Intent intent) {
+-        final boolean stateRestore = savedInstanceState != null;
+-        Video video;
+-
+-        Parcelable[] parcelables = intent.getParcelableArrayExtra(Consts.KEY_VIDEOS);
+-        if (parcelables != null) {
+-            final int length = parcelables.length;
+-            if (length > 0) {
+-                mVideos = new Video[length];
+-                for (int i = 0; i < length; i++) {
+-                    video = (Video) parcelables[i];
+-                    if (stateRestore) {
+-                        video.setProgress(
+-                                VideoListItemDao.getSingleton(mContext).getVideoProgress(video.getId()));
++                    @Override
++                    public void onInitializationFail() {
++                        if (callback != null)
++                            callback.onInitializationFail();
+                     }
+-                    mVideos[i] = video;
+-                }
+-                if (stateRestore) {
+-                    mVideoIndex = savedInstanceState.getInt(KEY_VIDEO_INDEX);
+-                } else {
+-                    mVideoIndex = intent.getIntExtra(Consts.KEY_SELECTION, 0);
+-                    if (mVideoIndex < 0 || mVideoIndex >= length) {
+-                        mVideoIndex = 0;
+-                    }
+-                }
+-                return true;
+-            }
+-            return false;
+-        }
+-
+-        video = intent.getParcelableExtra(Consts.KEY_VIDEO);
+-        if (video != null) {
+-            if (stateRestore) {
+-                video.setProgress(
+-                        VideoListItemDao.getSingleton(mContext).getVideoProgress(video.getId()));
+-            }
+-            mVideos = new Video[]{video};
+-            mVideoIndex = 0;
+-            return true;
+-        }
+-
+-        Parcelable[] videoUriParcels = (Parcelable[])
+-                intent.getSerializableExtra(Consts.KEY_VIDEO_URIS);
+-        Serializable[] videoTitleSerials = (Serializable[])
+-                intent.getSerializableExtra(Consts.KEY_VIDEO_TITLES);
+-        if (videoUriParcels != null) {
+-            final int length = videoUriParcels.length;
+-            if (length > 0) {
+-                mVideos = new Video[length];
+-                for (int i = 0; i < length; i++) {
+-                    video = buildVideoForUri((Uri) videoUriParcels[i],
+-                            (String) (videoTitleSerials != null ? videoTitleSerials[i] : null));
+-                    if (stateRestore && video.getId() != NO_ID) {
+-                        video.setProgress(
+-                                VideoListItemDao.getSingleton(mContext).getVideoProgress(video.getId()));
+-                    }
+-                    mVideos[i] = video;
+-                }
+-                if (stateRestore) {
+-                    mVideoIndex = savedInstanceState.getInt(KEY_VIDEO_INDEX);
+-                } else {
+-                    mVideoIndex = intent.getIntExtra(Consts.KEY_SELECTION, 0);
+-                    if (mVideoIndex < 0 || mVideoIndex >= length) {
+-                        mVideoIndex = 0;
+-                    }
+-                }
+-                return true;
+-            }
+-            return false;
+-        }
+-
+-        Uri uri = intent.getData();
+-        if (uri == null) {
+-            uri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+-            if (uri == null) {
+-                CharSequence uriCharSequence = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+-                if (uriCharSequence != null) {
+-                    uri = Uri.parse(uriCharSequence.toString());
+-                }
+-            }
+-        }
+-        if (uri != null) {
+-            video = buildVideoForUri(uri, intent.getStringExtra(Consts.KEY_VIDEO_TITLE));
+-            if (stateRestore && video.getId() != NO_ID) {
+-                video.setProgress(
+-                        VideoListItemDao.getSingleton(mContext).getVideoProgress(video.getId()));
+-            }
+-            mVideos = new Video[]{video};
+-            mVideoIndex = 0;
+-            return true;
+-        }
+-
+-        return false;
++                });
+     }
+ 
+-    private Video buildVideoForUri(Uri uri, String videoTitle) {
+-        String videoUrl = FileUtils.UriResolver.getPath(mContext, uri);
+-        if (videoUrl == null) {
+-            videoUrl = uri.toString();
++    @Override
++    public void initPlaylist(
++            @Nullable Bundle savedInstanceState, @NonNull Intent intent,
++            @Nullable PlaylistInitializationCallback callback) {
++        VideoRepository repository = mVideoRepository;
++        if (repository == null) {
++            return;
+         }
+-
+-        Video video = VideoListItemDao.getSingleton(mContext).queryVideoByPath(videoUrl);
+-        if (video == null) {
+-            video = new Video();
+-            video.setId(NO_ID);
+-            video.setPath(videoUrl);
+-            if (videoTitle != null) {
+-                video.setName(videoTitle);
+-            } else {
+-                video.setName(FileUtils.getFileNameFromFilePath(videoUrl));
+-            }
++        if (repository.initPlaylist(savedInstanceState, intent)) {
++            if (callback != null)
++                callback.onInitialized(repository.getVideos(), repository.getVideoIndex());
++        } else {
++            if (callback != null)
++                callback.onInitializationFail();
+         }
+-        return video;
+     }
+ 
+     @Override
+-    public void saveData(@NonNull Bundle outState) {
+-        outState.putInt(KEY_VIDEO_INDEX, mVideoIndex);
++    public void saveInstanceState(@NonNull Bundle outState) {
++        if (mVideoRepository != null) {
++            mVideoRepository.saveInstanceState(outState);
++        }
+     }
+ 
+     @Override
+     public void playCurrentVideo() {
+-        if (mView != null && mVideos != null) {
+-            mView.setVideoToPlay(mVideos[mVideoIndex]);
++        Video video = mVideoRepository == null ? null : mVideoRepository.getCurrentVideo();
++        if (mView != null && video != null) {
++            mView.setVideoToPlay(video);
+         }
+     }
+ 
+     @Override
+     public void playVideoAt(int position) {
+-        if (mVideoIndex == position) {
+-            playCurrentVideo();
+-        } else {
+-            if (mView != null && mVideos != null) {
+-                int oldPosition = mVideoIndex;
+-                mVideoIndex = position;
+-                mView.setVideoToPlay(mVideos[position]);
+-                mView.notifyPlaylistSelectionChanged(oldPosition, position, true);
++        recordCurrVideoProgress();
++
++        VideoRepository repository = mVideoRepository;
++        if (repository != null) {
++            if (repository.getVideoIndex() == position) {
++                playCurrentVideo();
++            } else {
++                repository.setVideoIndex(position);
+             }
+         }
+     }
+ 
+     @Override
+-    public int getCurrentVideoPositionInList() {
+-        return mVideoIndex;
+-    }
+-
+-    @Override
+-    public int getPlaylistSize() {
+-        return mVideos == null ? 0 : mVideos.length;
++    public void onVideoIndexChanged(int oldIndex, int index) {
++        if (mView != null && mVideoRepository != null) {
++            mView.setVideoToPlay(mVideoRepository.getVideos()[index]);
++            mView.notifyPlaylistSelectionChanged(oldIndex, index, true);
++        }
+     }
+ 
+     @Override
+     public void recordCurrVideoProgress() {
+-        if (mVideos != null) {
+-            recordVideoProgress(mVideos[mVideoIndex]);
++        Video video = mVideoRepository == null ? null : mVideoRepository.getCurrentVideo();
++        if (video != null) {
++            recordVideoProgress(video);
+         }
+     }
+ 
+-    private void recordVideoProgress(Video video) {
+-        if (mView != null) {
+-            video.setProgress(mView.getPlayingVideoProgress());
+-
+-            final long id = video.getId();
+-            if (id != NO_ID) {
+-                VideoListItemDao.getSingleton(mContext).setVideoProgress(id, video.getProgress());
+-            }
++    public void recordVideoProgress(Video video) {
++        if (mVideoRepository != null && mView != null) {
++            mVideoRepository.setVideoProgress(video, mView.getPlayingVideoProgress(), true);
+         }
+     }
+ 
+     @Override
+     public void recordCurrVideoProgressAndSetResult() {
+-        if (mVideos != null) {
++        Video[] videos = mVideoRepository == null ? null : mVideoRepository.getVideos();
++        if (videos != null) {
+             recordCurrVideoProgress();
+             if (mView != null) {
+-                if (mVideos.length == 1) {
++                if (videos.length == 1) {
+                     mView.setResult(Consts.RESULT_CODE_PLAY_VIDEO,
+-                            new Intent().putExtra(Consts.KEY_VIDEO, mVideos[0]));
++                            new Intent().putExtra(Consts.KEY_VIDEO, videos[0]));
+                 } else {
+                     mView.setResult(Consts.RESULT_CODE_PLAY_VIDEOS,
+-                            new Intent().putExtra(Consts.KEY_VIDEOS, mVideos));
++                            new Intent().putExtra(Consts.KEY_VIDEOS, videos));
+                 }
+             }
+         }
+@@ -242,52 +161,39 @@
+ 
+     @Override
+     public void skipToPreviousVideo() {
+-        if (mVideos != null) {
+-            final int oldVideoIndex = mVideoIndex;
+-            if (oldVideoIndex == 0) {
+-                mVideoIndex = mVideos.length - 1;
+-            } else {
+-                --mVideoIndex;
+-            }
+-            if (mView != null) {
+-                mView.setVideoToPlay(mVideos[mVideoIndex]);
+-                mView.notifyPlaylistSelectionChanged(oldVideoIndex, mVideoIndex, true);
+-            }
++        recordCurrVideoProgress();
++        if (mVideoRepository != null) {
++            mVideoRepository.moveVideoIndexBackward();
+         }
+     }
+ 
+     @Override
+     public void skipToNextVideo() {
+-        if (mVideos != null) {
+-            final int oldVideoIndex = mVideoIndex;
+-            if (oldVideoIndex == mVideos.length - 1) {
+-                mVideoIndex = 0;
+-            } else {
+-                ++mVideoIndex;
+-            }
+-            if (mView != null) {
+-                mView.setVideoToPlay(mVideos[mVideoIndex]);
+-                mView.notifyPlaylistSelectionChanged(oldVideoIndex, mVideoIndex, true);
+-            }
++        recordCurrVideoProgress();
++        if (mVideoRepository != null) {
++            mVideoRepository.moveVideoIndexForward();
+         }
+     }
+ 
+     @Override
+     public void onCurrentVideoStarted() {
+-        Video video = mVideos[mVideoIndex];
+-        int progress = video.getProgress();
+-        if (progress > 0 && progress < video.getDuration() - Configs.TOLERANCE_VIDEO_DURATION) {
+-            if (mView != null) {
+-                mView.seekPositionOnVideoStarted(progress);
++        Video video = mVideoRepository == null ? null : mVideoRepository.getCurrentVideo();
++        if (video != null) {
++            int progress = video.getProgress();
++            if (progress > 0 && progress < video.getDuration() - Configs.TOLERANCE_VIDEO_DURATION) {
++                if (mView != null) {
++                    mView.seekPositionOnVideoStarted(progress);
++                }
++                mVideoRepository.setVideoProgress(video, 0, false);
+             }
+-            video.setProgress(0);
+         }
+     }
+ 
+     @Override
+     public void shareCurrentVideo(@NonNull Context context) {
+-        if (mVideos != null) {
+-            VideoListItemOpsKt.shareVideo(context, mVideos[mVideoIndex]);
++        Video video = mVideoRepository == null ? null : mVideoRepository.getCurrentVideo();
++        if (video != null) {
++            VideoListItemOpsKt.shareVideo(context, video);
+         }
+     }
+ 
+@@ -317,12 +223,13 @@
+         public void onBindViewHolder(@NonNull IVideoView.PlaylistViewHolder holder,
+                                      int position, @NonNull List<Object> payloads) {
+             super.onBindViewHolder(holder, position, payloads);
+-            holder.bindData(mVideos[position], position, payloads);
++            holder.bindData(mVideoRepository.getVideos()[position], position,
++                    position == mVideoRepository.getVideoIndex(), payloads);
+         }
+ 
+         @Override
+         public void loadItemImages(@NonNull IVideoView.PlaylistViewHolder holder) {
+-            Video video = mVideos[holder.getBindingAdapterPosition()];
++            Video video = mVideoRepository.getVideos()[holder.getBindingAdapterPosition()];
+             holder.loadVideoThumb(video);
+         }
+ 
+@@ -333,12 +240,14 @@
+ 
+         @Override
+         public int getItemCount() {
+-            return mVideos.length;
++            Video[] videos = mVideoRepository == null ? null : mVideoRepository.getVideos();
++            return videos == null ? 0 : videos.length;
+         }
+ 
+         @Override
+         public void onItemClick(@NonNull IVideoView.PlaylistViewHolder holder, int position) {
+-            holder.onItemViewClick(position);
++            holder.onItemViewClick(mVideoRepository.getVideos()[position], position,
++                    position == mVideoRepository.getVideoIndex());
+         }
+     }
+ }
