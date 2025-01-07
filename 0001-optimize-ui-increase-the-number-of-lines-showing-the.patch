@@ -1,4 +1,4 @@
-From ef819c61535097842a6447c1e46fc76100daa0f0 Mon Sep 17 00:00:00 2001
+From 434ec088e44499b4eb8de0c63eb380eff34436cf Mon Sep 17 00:00:00 2001
 From: lzl <2233788867@qq.com>
 Date: Tue, 7 Jan 2025 07:01:44 +0800
 Subject: [PATCH] optimize (ui): increase the number of lines showing the
@@ -11,38 +11,40 @@ Subject: [PATCH] optimize (ui): increase the number of lines showing the
  .../com/liuzhenlin/videos/model/BaseModel.kt  |   4 +-
  .../videos/model/BaseRepository.java          |  12 +-
  .../videos/model/FeedbackRepository.java      |   9 +-
- .../videos/model/FeedbackRepositoryImpl.java  | 105 +++++++------
- .../model/LocalSearchedVideoListModel.kt      |  16 +-
- .../videos/model/LocalVideoListModel.kt       |  18 ++-
+ .../videos/model/FeedbackRepositoryImpl.java  |  31 ++--
+ .../model/LocalSearchedVideoListModel.kt      |  66 +++++---
+ .../videos/model/LocalVideoListModel.kt       |  90 ++++++++---
  .../videos/model/OnlineVideoListModel.kt      |   3 +-
  .../videos/model/VideoMoveRepository.kt       |  18 ++-
  .../videos/model/VideoRepository.java         |   8 +-
- .../videos/model/VideoRepositoryImpl.java     | 144 ++++++++++--------
- .../videos/presenter/FeedbackPresenter.java   |  19 ++-
+ .../videos/model/VideoRepositoryImpl.java     | 145 ++++++++++--------
+ .../videos/presenter/FeedbackPresenter.java   |  20 ++-
  .../videos/presenter/IFeedbackPresenter.java  |   5 +-
  .../videos/presenter/IVideoPresenter.java     |   5 +-
- .../presenter/LocalSearchedVideosPresenter.kt |  14 +-
- .../presenter/LocalVideoListPresenter.kt      |  25 +--
+ .../presenter/LocalSearchedVideosPresenter.kt |  15 +-
+ .../presenter/LocalVideoListPresenter.kt      |  26 ++--
  .../videos/presenter/Presenter.java           |  38 ++++-
  .../videos/presenter/VideoMovePresenter.kt    |   8 +-
- .../videos/presenter/VideoPresenter.java      |  38 +++--
+ .../videos/presenter/VideoPresenter.java      |  39 +++--
  .../view/activity/FeedbackActivity.java       |   4 +-
  .../videos/view/activity/MainActivity.java    |  47 ++++--
  .../videos/view/activity/VideoActivity.java   | 122 ++++++++-------
  .../activity/startup/LaunchProcessor.java     |   7 +-
  .../fragment/LocalSearchedVideosFragment.kt   |  62 ++++----
- .../view/fragment/LocalVideoListFragment.kt   |  75 ++++-----
- .../view/fragment/LocalVideosFragment.kt      |  39 ++---
+ .../view/fragment/LocalVideoListFragment.kt   |  75 +++++----
+ .../view/fragment/LocalVideosFragment.kt      |  39 +++--
  .../videos/view/fragment/VideoMoveFragment.kt |  30 ++--
  common_build.gradle                           |   2 +
  .../LifecycleCoroutineScopeImplAccessor.java  |  24 +++
  .../androidx/lifecycle/ViewModelAccessor.java |  25 +++
  .../common/utils/CloseableCoroutineScope.kt   |  20 +++
- .../com/liuzhenlin/common/utils/Coroutines.kt |  78 ++++++++++
- .../liuzhenlin/common/utils/JCoroutine.java   | 127 +++++++++++++++
+ .../com/liuzhenlin/common/utils/Coroutines.kt |  82 ++++++++++
+ .../liuzhenlin/common/utils/FileUtils.java    |  38 +++--
+ .../liuzhenlin/common/utils/JCoroutine.java   | 134 ++++++++++++++++
  .../com/liuzhenlin/common/utils/JavaOnly.java |  22 +++
  .../common/utils/ReflectionUtils.java         |  14 ++
- 37 files changed, 856 insertions(+), 347 deletions(-)
+ .../com/liuzhenlin/common/utils/Regex.java    |  18 +--
+ 39 files changed, 940 insertions(+), 383 deletions(-)
  create mode 100644 libraries/common/src/main/java/androidx/lifecycle/LifecycleCoroutineScopeImplAccessor.java
  create mode 100644 libraries/common/src/main/java/androidx/lifecycle/ViewModelAccessor.java
  create mode 100644 libraries/common/src/main/java/com/liuzhenlin/common/utils/CloseableCoroutineScope.kt
@@ -206,7 +208,7 @@ index 9783cd5..495f651 100644
  
      @NonNull List<Bitmap> getPictures();
 diff --git a/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepositoryImpl.java b/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepositoryImpl.java
-index 029a12d..05b8669 100644
+index 029a12d..161c071 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepositoryImpl.java
 +++ b/app/src/main/java/com/liuzhenlin/videos/model/FeedbackRepositoryImpl.java
 @@ -8,6 +8,7 @@ package com.liuzhenlin.videos.model;
@@ -247,7 +249,7 @@ index 029a12d..05b8669 100644
      private final UserFilledTextsFetcher mUserFilledTextsFetcher;
      private final FeedbackSavedPrefs mFeedbackSPs;
      private final FeedbackInfo mSavedFeedbackInfo;
-@@ -51,16 +56,24 @@ class FeedbackRepositoryImpl extends BaseRepository<FeedbackRepository.Callback>
+@@ -51,9 +56,9 @@ class FeedbackRepositoryImpl extends BaseRepository<FeedbackRepository.Callback>
      private static final String KEY_FILLED_PICTURE_PATHS = "kfpp";
  
      public FeedbackRepositoryImpl(
@@ -260,83 +262,7 @@ index 029a12d..05b8669 100644
          mUserFilledTextsFetcher = userTextsFetcher;
          mFeedbackSPs = new FeedbackSavedPrefs(context);
          mSavedFeedbackInfo = new FeedbackInfo();
-         mPictures = new ArrayList<>(maxCountOfPicturesToUpload + 1);
--        //noinspection ConstantConditions
--        mPictures.add(BitmapUtils.drawableToBitmap(
--                AppCompatResources.getDrawable(context, R.drawable.ic_add_photo_gray_36dp)));
-+        JCoroutine.launch(coroutineScope, Dispatchers.getIO(), () -> {
-+            //noinspection ConstantConditions
-+            Bitmap addPhoto = BitmapUtils.drawableToBitmap(
-+                    AppCompatResources.getDrawable(context, R.drawable.ic_add_photo_gray_36dp));
-+            JCoroutine.launch(coroutineScope, Dispatchers.getMain(), () -> {
-+                mPictures.add(addPhoto);
-+                if (mCallback != null) {
-+                    mCallback.onPictureAdded(addPhoto);
-+                }
-+            });
-+        });
-     }
- 
-     private void cacheFeedbackInfo(String text, String contactWay, List<String> picturePaths) {
-@@ -113,31 +126,34 @@ class FeedbackRepositoryImpl extends BaseRepository<FeedbackRepository.Callback>
-     @Override
-     public void restoreInstanceState(@Nullable Bundle savedInstanceState) {
-         if (savedInstanceState == null) {
--            String feedbackText = mFeedbackSPs.getText();
--            String contactWay = mFeedbackSPs.getContactWay();
--            List<String> picturePaths = mFeedbackSPs.getPicturePaths();
--
--            cacheFeedbackInfo(feedbackText, contactWay, picturePaths);
--
--            setFeedbackText(feedbackText);
--            setContactWay(contactWay);
--            if (picturePaths != null) {
--                List<String> invalidPaths = null;
--                for (String path : picturePaths) {
--                    // 有可能该路径下的图片已被删除：如果删除了，从sp文件中移除该保存的路径
--                    if (!new File(path).exists()) {
--                        if (invalidPaths == null)
--                            invalidPaths = new LinkedList<>();
--                        invalidPaths.add(path);
--                        continue;
-+            JCoroutine.launch(mCoroutineScope, Dispatchers.getIO(), () -> {
-+                String feedbackText = mFeedbackSPs.getText();
-+                String contactWay = mFeedbackSPs.getContactWay();
-+                List<String> picturePaths = mFeedbackSPs.getPicturePaths();
-+                if (picturePaths != null) {
-+                    List<String> invalidPaths = null;
-+                    for (String path : picturePaths) {
-+                        // 有可能该路径下的图片已被删除：如果删除了，从sp文件中移除该保存的路径
-+                        if (!new File(path).exists()) {
-+                            if (invalidPaths == null)
-+                                invalidPaths = new LinkedList<>();
-+                            invalidPaths.add(path);
-+                            continue;
-+                        }
-+                        JCoroutine.launch(mCoroutineScope, Dispatchers.getMain(),
-+                                () -> addPicture(path));
-+                    }
-+                    if (invalidPaths != null) {
-+                        picturePaths.removeAll(invalidPaths);
-+                        mFeedbackSPs.edit().setPicturePaths(picturePaths).apply();
-                     }
--                    addPicture(path);
--                }
--                if (invalidPaths != null) {
--                    picturePaths.removeAll(invalidPaths);
--                    mFeedbackSPs.edit().setPicturePaths(picturePaths).apply();
-                 }
--            }
-+                JCoroutine.launch(mCoroutineScope, Dispatchers.getMain(), () -> {
-+                    cacheFeedbackInfo(feedbackText, contactWay, picturePaths);
-+                    setFeedbackText(feedbackText);
-+                    setContactWay(contactWay);
-+                });
-+            });
-         } else {
-             String[] savedPicturePaths = (String[])
-                     savedInstanceState.getSerializable(KEY_SAVED_PICTURE_PATHS);
-@@ -176,20 +192,21 @@ class FeedbackRepositoryImpl extends BaseRepository<FeedbackRepository.Callback>
+@@ -176,20 +181,14 @@ class FeedbackRepositoryImpl extends BaseRepository<FeedbackRepository.Callback>
          final List<String> picturePaths = mPicturePaths;
          if (picturePath != null && !picturePaths.contains(picturePath)) {
              picturePaths.add(picturePath);
@@ -349,20 +275,11 @@ index 029a12d..05b8669 100644
 -                            }
 -                        });
 -                if (pictureRemoved.get()) {
--                    return;
--                }
 +            JCoroutine.launch(mCoroutineScope, JCoroutine.SingleDispatcher, () -> {
-+                do {
-+                    try {
-+                        if (JCoroutine.runBlocking(
-+                                Dispatchers.getMain(), () -> !picturePaths.contains(picturePath))) {
-+                            return;
-+                        }
-+                        break;
-+                    } catch (InterruptedException e) {
-+                        Log.w(TAG, e);
-+                    }
-+                } while (CoroutineScopeKt.isActive(mCoroutineScope));
++                if (JCoroutine.runBlocking(
++                        Dispatchers.getMain(), () -> !picturePaths.contains(picturePath), false)) {
+                     return;
+                 }
                  final Bitmap bitmap = BitmapUtils.decodeRotatedBitmapFormFile(picturePath);
                  if (bitmap != null) {
 -                    Executors.MAIN_EXECUTOR.post(() -> {
@@ -371,7 +288,7 @@ index 029a12d..05b8669 100644
                              List<String> loadedPicturePaths = mLoadedPicturePaths;
                              List<Bitmap> pictures = mPictures;
 diff --git a/app/src/main/java/com/liuzhenlin/videos/model/LocalSearchedVideoListModel.kt b/app/src/main/java/com/liuzhenlin/videos/model/LocalSearchedVideoListModel.kt
-index 3128436..10373a2 100644
+index 3128436..c7bb1a6 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/model/LocalSearchedVideoListModel.kt
 +++ b/app/src/main/java/com/liuzhenlin/videos/model/LocalSearchedVideoListModel.kt
 @@ -10,6 +10,7 @@ import android.content.Context
@@ -382,18 +299,19 @@ index 3128436..10373a2 100644
  import com.liuzhenlin.common.utils.Executors
  import com.liuzhenlin.videos.SORT_MODE_RELEVANCY_DESC
  import com.liuzhenlin.videos.allEqual
-@@ -25,6 +26,10 @@ import com.liuzhenlin.videos.view.fragment.VideoListItemDeleteOnDiskListener
+@@ -25,6 +26,11 @@ import com.liuzhenlin.videos.view.fragment.VideoListItemDeleteOnDiskListener
  import com.liuzhenlin.videos.view.fragment.VideoListItemRenameResultCallback
  import com.liuzhenlin.videos.view.fragment.deleteOnDisk
  import com.liuzhenlin.videos.view.fragment.renameTo
 +import kotlinx.coroutines.CoroutineScope
 +import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.Job
 +import kotlinx.coroutines.launch
 +import kotlinx.coroutines.withContext
  
  /**
   * @author 刘振林
-@@ -56,9 +61,10 @@ interface ILocalSearchedVideoListModel {
+@@ -56,9 +62,10 @@ interface ILocalSearchedVideoListModel {
      }
  }
  
@@ -407,20 +325,79 @@ index 3128436..10373a2 100644
  
      private val mVideos = arrayListOf<Video>()
      private val mSearchCache = SearchCache()
-@@ -244,9 +250,9 @@ class LocalSearchedVideoListModel(context: Context)
+@@ -243,10 +250,11 @@ class LocalSearchedVideoListModel(context: Context)
+     }
  
      override fun deleteVideo(video: Video, listener: VideoListItemDeleteOnDiskListener<Video>?) {
++        val video1 = video.shallowCopy<Video>()
          listener?.onItemsDeleteStart(video)
 -        Executors.THREAD_POOL_EXECUTOR.execute {
-+        AppScope.launch(Dispatchers.IO) {
-             arrayOf(video).deleteOnDisk()
+-            arrayOf(video).deleteOnDisk()
 -            Executors.MAIN_EXECUTOR.execute {
++        AppScope.launch(Dispatchers.IO) {
++            arrayOf(video1).deleteOnDisk()
 +            withContext(Dispatchers.Main) {
                  listener?.onItemsDeleteFinish(video)
              }
          }
+@@ -261,27 +269,37 @@ class LocalSearchedVideoListModel(context: Context)
+     }
+ 
+     override fun renameVideoTo(video: Video, callback: VideoListItemRenameResultCallback<Video>?) {
+-        val idx = mVideos.indexOf(video)
++        var idx = mVideos.indexOf(video)
+         if (idx >= 0) {
+             val v = mVideos[idx]
+ 
+-            if (!v.renameTo(video.name, callback))
+-                return
+-
+-            v.name = video.name
+-            mVideos.sortByElementName()
+-
+-            // Use v for index search because its id might have been updated in the above
+-            // v.renameTo() method invocation
+-            val index = mSearchedVideos.indexOf(v)
+-            if (index >= 0) {
+-                mSearchedVideos[index].name = video.name
+-                if (computeVideoRelevancy(mSearchedVideos[index]) > 0) {
+-                    mSearchedVideos.sort(mSearchedVideosSortMode)
+-                    mCallback?.onSearchedVideoRenamed(index, mSearchedVideos.indexOf(v))
+-                } else {
+-                    mSearchedVideos.removeAt(index)
+-                    mCallback?.onSearchedVideoDeleted(index)
++            val v1 = v.shallowCopy<Video>()
++            val newName = video.name
++            AppScope.launch(Dispatchers.IO) {
++                if (!v1.renameTo(newName, callback))
++                    return@launch
++
++                val v2 = v1.shallowCopy<Video>()
++                withContext(mCoroutineScope.coroutineContext[Job]!! + Dispatchers.Main) {
++                    // Use v for index search because its id might have been updated in the above
++                    // v1.renameTo() method invocation
++                    idx = mVideos.indexOf(v)
++                    if (idx >= 0) {
++                        mVideos[idx] = v2
++                        mVideos.sortByElementName()
++
++                        val index = mSearchedVideos.indexOf(v)
++                        if (index >= 0) {
++                            mSearchedVideos[index] = v2
++                            if (computeVideoRelevancy(mSearchedVideos[index]) > 0) {
++                                mSearchedVideos.sort(mSearchedVideosSortMode)
++                                mCallback?.onSearchedVideoRenamed(index, mSearchedVideos.indexOf(v2))
++                            } else {
++                                mSearchedVideos.removeAt(index)
++                                mCallback?.onSearchedVideoDeleted(index)
++                            }
++                        }
++                    }
+                 }
+             }
+         }
 diff --git a/app/src/main/java/com/liuzhenlin/videos/model/LocalVideoListModel.kt b/app/src/main/java/com/liuzhenlin/videos/model/LocalVideoListModel.kt
-index 8a83caf..7fc882e 100644
+index 8a83caf..2415ed9 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/model/LocalVideoListModel.kt
 +++ b/app/src/main/java/com/liuzhenlin/videos/model/LocalVideoListModel.kt
 @@ -12,6 +12,7 @@ import android.os.AsyncTask
@@ -431,18 +408,19 @@ index 8a83caf..7fc882e 100644
  import com.liuzhenlin.common.utils.Executors
  import com.liuzhenlin.common.utils.FileUtils
  import com.liuzhenlin.videos.*
-@@ -25,6 +26,10 @@ import com.liuzhenlin.videos.view.fragment.VideoListItemDeleteOnDiskListener
+@@ -25,6 +26,11 @@ import com.liuzhenlin.videos.view.fragment.VideoListItemDeleteOnDiskListener
  import com.liuzhenlin.videos.view.fragment.VideoListItemRenameResultCallback
  import com.liuzhenlin.videos.view.fragment.deleteOnDisk
  import com.liuzhenlin.videos.view.fragment.renameTo
 +import kotlinx.coroutines.CoroutineScope
 +import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.Job
 +import kotlinx.coroutines.launch
 +import kotlinx.coroutines.withContext
  import java.io.File
  import java.util.LinkedList
  
-@@ -72,9 +77,12 @@ interface ILocalVideoListModel {
+@@ -72,9 +78,12 @@ interface ILocalVideoListModel {
      }
  }
  
@@ -458,18 +436,138 @@ index 8a83caf..7fc882e 100644
  
      private val mVideoListItems: MutableList<VideoListItem> =
              parentVideoDir?.videoListItems ?: mutableListOf()
-@@ -436,9 +444,9 @@ class LocalVideoListModel(context: Context, override val parentVideoDir: VideoDi
+@@ -310,14 +319,15 @@ class LocalVideoListModel(context: Context, override val parentVideoDir: VideoDi
+     }
+ 
+     override fun updateVideoDirectory(videodir: VideoDirectory) {
++        val dirPath = videodir.path
+         loop@ for ((i, item) in mVideoListItems.withIndex()) {
+-            if (item.path != videodir.path) continue@loop
++            if (item.path != dirPath) continue@loop
+ 
+             val dao = VideoListItemDao.getSingleton(mContext)
+             when (videodir.videoCount()) {
+                 0 -> {
+                     if (item is VideoDirectory) {
+-                        dao.deleteVideoDir(item.path)
++                        AppScope.launch(Dispatchers.IO) { dao.deleteVideoDir(dirPath) }
+                     }
+ 
+                     mVideoListItems.removeAt(i)
+@@ -331,15 +341,25 @@ class LocalVideoListModel(context: Context, override val parentVideoDir: VideoDi
+                     if (item is Video || compactVideoDir) {
+                         if (compactVideoDir) {
+                             val vd = videodir.videoListItems[0]
+-                            if (vd.isTopped) {
+-                                vd.isTopped = false
+-                                dao.setVideoListItemTopped(vd, false)
++                            AppScope.launch(Dispatchers.Main.immediate) {
++                                if (vd.isTopped) {
++                                    vd.isTopped = false
++                                    val vd1 = vd.shallowCopy<Video>()
++                                    launch(Dispatchers.IO) {
++                                        dao.setVideoListItemTopped(vd1, false)
++                                    }
++                                }
++                                withContext(Dispatchers.IO) {
++                                    dao.deleteVideoDir(dirPath)
++                                }
+                             }
+-                            dao.deleteVideoDir(videodir.path)
+                         } else {
+                             if (videodir.isTopped) {
+                                 videodir.isTopped = false
+-                                dao.setVideoListItemTopped(videodir, false)
++                                val videodir1 = videodir.shallowCopy<VideoDirectory>()
++                                AppScope.launch(Dispatchers.IO) {
++                                    dao.setVideoListItemTopped(videodir1, false)
++                                }
+                             }
+                         }
+ 
+@@ -411,7 +431,10 @@ class LocalVideoListModel(context: Context, override val parentVideoDir: VideoDi
+         val item = mVideoListItems[index]
+         if (item.isTopped != topped) {
+             item.isTopped = topped
+-            VideoListItemDao.getSingleton(mContext).setVideoListItemTopped(item, topped)
++            val item1 = item.shallowCopy<VideoListItem>()
++            AppScope.launch(Dispatchers.IO) {
++                VideoListItemDao.getSingleton(mContext).setVideoListItemTopped(item1, topped)
++            }
+ 
+             val newIndex = mVideoListItems.reordered(itemsSortMode).indexOf(item)
+             if (newIndex != index) {
+@@ -435,10 +458,13 @@ class LocalVideoListModel(context: Context, override val parentVideoDir: VideoDi
+ 
      private fun deleteItemsOnDisk(vararg items: VideoListItem,
                                    listener: VideoListItemDeleteOnDiskListener<VideoListItem>?) {
++        val items1 = items.clone().onEach {
++            if (it is Video) it.shallowCopy<Video>() else it.deepCopy<VideoListItem>()
++        }
          listener?.onItemsDeleteStart(*items)
 -        Executors.THREAD_POOL_EXECUTOR.execute {
-+        AppScope.launch(Dispatchers.IO) {
-             items.deleteOnDisk()
+-            items.deleteOnDisk()
 -            Executors.MAIN_EXECUTOR.execute {
++        AppScope.launch(Dispatchers.IO) {
++            items1.deleteOnDisk()
 +            withContext(Dispatchers.Main) {
                  listener?.onItemsDeleteFinish(*items)
              }
          }
+@@ -469,20 +495,31 @@ class LocalVideoListModel(context: Context, override val parentVideoDir: VideoDi
+ 
+     override fun renameItemTo(
+             item: VideoListItem, callback: VideoListItemRenameResultCallback<VideoListItem>?) {
+-        val index = mVideoListItems.indexOf(item)
++        var index = mVideoListItems.indexOf(item)
+         if (index >= 0) {
+             val i = mVideoListItems[index]
+ 
+-            if (!i.renameTo(item.name, callback))
+-                return
+-
+-            // Use i for index search because its id/path might have been updated in the above
+-            // i.renameTo() method invocation
+-            val newIndex = mVideoListItems.reordered(itemsSortMode).indexOf(i)
+-            if (newIndex != index) {
+-                mVideoListItems.add(newIndex, mVideoListItems.removeAt(index))
++            val i1 = i.shallowCopy<VideoListItem>()
++            val newName = item.name
++            AppScope.launch(Dispatchers.IO) {
++                if (!i1.renameTo(newName, callback))
++                    return@launch
++
++                val i2 = i1.shallowCopy<VideoListItem>()
++                withContext(mCoroutineScope.coroutineContext[Job]!! + Dispatchers.Main) {
++                    // Use i for index search because its id/path might have been updated in
++                    // the above i1.renameTo() method invocation
++                    index = mVideoListItems.indexOf(i)
++                    if (index >= 0) {
++                        mVideoListItems[index] = i2
++                        val newIndex = mVideoListItems.reordered(itemsSortMode).indexOf(i2)
++                        if (newIndex != index) {
++                            mVideoListItems.add(newIndex, mVideoListItems.removeAt(index))
++                        }
++                        mCallback?.onItemRenamed(index, newIndex)
++                    }
++                }
+             }
+-            mCallback?.onItemRenamed(index, newIndex)
+         }
+     }
+ 
+@@ -514,7 +551,10 @@ class LocalVideoListModel(context: Context, override val parentVideoDir: VideoDi
+             AppPrefs.getSingleton(mContext).edit().setLocalVideoListItemsSortMode(sortMode).apply()
+         } else {
+             parentVideoDir.itemsSortMode = sortMode
+-            VideoListItemDao.getSingleton(mContext).updateVideoDir(parentVideoDir)
++            val parentVideoDir1 = parentVideoDir.shallowCopy<VideoDirectory>()
++            AppScope.launch(Dispatchers.IO) {
++                VideoListItemDao.getSingleton(mContext).updateVideoDir(parentVideoDir1)
++            }
+         }
+         mVideoListItems.set(mVideoListItems.reordered(sortMode))
+         mCallback?.onAllItemsReordered(sortMode)
 diff --git a/app/src/main/java/com/liuzhenlin/videos/model/OnlineVideoListModel.kt b/app/src/main/java/com/liuzhenlin/videos/model/OnlineVideoListModel.kt
 index 2a64582..a3c044a 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/model/OnlineVideoListModel.kt
@@ -574,7 +672,7 @@ index 1256a47..b66253d 100644
  
      @Nullable Video[] getVideos();
 diff --git a/app/src/main/java/com/liuzhenlin/videos/model/VideoRepositoryImpl.java b/app/src/main/java/com/liuzhenlin/videos/model/VideoRepositoryImpl.java
-index 5fa057b..76a0e39 100644
+index 5fa057b..fa1fcc9 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/model/VideoRepositoryImpl.java
 +++ b/app/src/main/java/com/liuzhenlin/videos/model/VideoRepositoryImpl.java
 @@ -13,14 +13,19 @@ import android.os.Parcelable;
@@ -597,7 +695,7 @@ index 5fa057b..76a0e39 100644
  import static com.liuzhenlin.common.Consts.NO_ID;
  
  class VideoRepositoryImpl extends BaseRepository<VideoRepository.Callback>
-@@ -31,104 +36,120 @@ class VideoRepositoryImpl extends BaseRepository<VideoRepository.Callback>
+@@ -31,104 +36,121 @@ class VideoRepositoryImpl extends BaseRepository<VideoRepository.Callback>
  
      private static final String KEY_VIDEO_INDEX = "kvi";
  
@@ -765,9 +863,10 @@ index 5fa057b..76a0e39 100644
 +        if (initSuceess) {
 +            final Video[] vs = videos;
 +            final int vi = videoIndex;
-+            JCoroutine.withContext(Dispatchers.getMain(), () -> {
++            JCoroutine.runBlocking(Dispatchers.getMain().getImmediate(), () -> {
 +                mVideos = vs;
 +                mVideoIndex = vi;
++                return null;
 +            });
 +        }
 +        return initSuceess;
@@ -778,7 +877,7 @@ index 5fa057b..76a0e39 100644
      }
  
      private Video buildVideoForUri(Uri uri, String videoTitle) {
-@@ -222,7 +243,8 @@ class VideoRepositoryImpl extends BaseRepository<VideoRepository.Callback>
+@@ -222,7 +244,8 @@ class VideoRepositoryImpl extends BaseRepository<VideoRepository.Callback>
          if (updateDB) {
              final long id = video.getId();
              if (id != NO_ID) {
@@ -789,18 +888,26 @@ index 5fa057b..76a0e39 100644
          }
      }
 diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/FeedbackPresenter.java b/app/src/main/java/com/liuzhenlin/videos/presenter/FeedbackPresenter.java
-index a1b3107..8ee9ea4 100644
+index a1b3107..2ec65ab 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/presenter/FeedbackPresenter.java
 +++ b/app/src/main/java/com/liuzhenlin/videos/presenter/FeedbackPresenter.java
-@@ -43,16 +43,21 @@ class FeedbackPresenter extends Presenter<IFeedbackView> implements IFeedbackPre
+@@ -16,6 +16,7 @@ import android.widget.Toast;
+ import androidx.annotation.NonNull;
+ import androidx.annotation.Nullable;
+ 
++import com.liuzhenlin.common.utils.Coroutines;
+ import com.liuzhenlin.common.utils.NetworkUtil;
+ import com.liuzhenlin.common.utils.Synthetic;
+ import com.liuzhenlin.videos.R;
+@@ -43,16 +44,21 @@ class FeedbackPresenter extends Presenter<IFeedbackView> implements IFeedbackPre
      @Override
      public void attachToView(@NonNull IFeedbackView view) {
          super.attachToView(view);
 -        mFeedbackRepository = FeedbackRepository.create(mContext, this, MAX_COUNT_UPLOAD_PICTURES);
 -        mFeedbackRepository.setCallback(this);
 +        if (mFeedbackRepository == null) {
-+            mFeedbackRepository = FeedbackRepository.create(mContext, mCoroutineScope, this,
-+                    MAX_COUNT_UPLOAD_PICTURES);
++            mFeedbackRepository = FeedbackRepository.create(mContext, Coroutines.getModelScope(this),
++                    this, MAX_COUNT_UPLOAD_PICTURES);
 +            mFeedbackRepository.setCallback(this);
 +        }
      }
@@ -853,10 +960,18 @@ index 16145c0..b791260 100644
      }
  }
 diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/LocalSearchedVideosPresenter.kt b/app/src/main/java/com/liuzhenlin/videos/presenter/LocalSearchedVideosPresenter.kt
-index 2f9460a..71831f4 100644
+index 2f9460a..2e29571 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/presenter/LocalSearchedVideosPresenter.kt
 +++ b/app/src/main/java/com/liuzhenlin/videos/presenter/LocalSearchedVideosPresenter.kt
-@@ -41,8 +41,10 @@ interface ILocalSearchedVideosPresenter : IPresenter<ILocalSearchedVideosView>,
+@@ -10,6 +10,7 @@ import android.content.Intent
+ import android.view.ViewGroup
+ import com.liuzhenlin.common.adapter.HeaderAndFooterWrapper
+ import com.liuzhenlin.common.adapter.ImageLoadingListAdapter
++import com.liuzhenlin.common.utils.modelScope
+ import com.liuzhenlin.videos.*
+ import com.liuzhenlin.videos.bean.Video
+ import com.liuzhenlin.videos.model.ILocalSearchedVideoListModel
+@@ -41,8 +42,10 @@ interface ILocalSearchedVideosPresenter : IPresenter<ILocalSearchedVideosView>,
  
      companion object {
          @JvmStatic
@@ -869,16 +984,16 @@ index 2f9460a..71831f4 100644
          }
      }
  }
-@@ -61,7 +63,7 @@ class LocalSearchedVideosPresenter : Presenter<ILocalSearchedVideosView>(),
+@@ -61,7 +64,7 @@ class LocalSearchedVideosPresenter : Presenter<ILocalSearchedVideosView>(),
          super.attachToView(view)
          var model = mModel
          if (model == null) {
 -            model = LocalSearchedVideoListModel(mContext)
-+            model = LocalSearchedVideoListModel(mContext, mCoroutineScope)
++            model = LocalSearchedVideoListModel(mContext, modelScope)
              model.addOnLoadListener(object : OnLoadListener<Nothing, MutableList<Video>?> {
                  override fun onLoadStart() = onVideoItemsLoadStart()
  
-@@ -76,10 +78,10 @@ class LocalSearchedVideosPresenter : Presenter<ILocalSearchedVideosView>(),
+@@ -76,10 +79,10 @@ class LocalSearchedVideosPresenter : Presenter<ILocalSearchedVideosView>(),
          model.setVideos(view.getArguments()?.getParcelableArrayList(KEY_VIDEOS) ?: model.videos)
      }
  
@@ -893,10 +1008,18 @@ index 2f9460a..71831f4 100644
                          KEY_VIDEOS, videos as? ArrayList<Video> ?: ArrayList(videos)))
          mModel?.setCallback(null)
 diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/LocalVideoListPresenter.kt b/app/src/main/java/com/liuzhenlin/videos/presenter/LocalVideoListPresenter.kt
-index cffa775..f23f44e 100644
+index cffa775..ae87a7e 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/presenter/LocalVideoListPresenter.kt
 +++ b/app/src/main/java/com/liuzhenlin/videos/presenter/LocalVideoListPresenter.kt
-@@ -81,8 +81,10 @@ interface ILocalVideoListPresenter : IPresenter<ILocalVideoListView>,
+@@ -12,6 +12,7 @@ import android.view.ViewGroup
+ import androidx.fragment.app.Fragment
+ import com.liuzhenlin.common.adapter.HeaderAndFooterWrapper
+ import com.liuzhenlin.common.adapter.ImageLoadingListAdapter
++import com.liuzhenlin.common.utils.modelScope
+ import com.liuzhenlin.videos.*
+ import com.liuzhenlin.videos.bean.Video
+ import com.liuzhenlin.videos.bean.VideoDirectory
+@@ -81,8 +82,10 @@ interface ILocalVideoListPresenter : IPresenter<ILocalVideoListView>,
  
      companion object {
          @JvmStatic
@@ -909,26 +1032,26 @@ index cffa775..f23f44e 100644
          }
      }
  }
-@@ -101,7 +103,7 @@ class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoLis
+@@ -101,7 +104,7 @@ class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoLis
      private val mModel: LocalVideoListModel
          get() {
              if (_mModel == null) {
 -                _mModel = LocalVideoListModel(App.getInstanceUnsafe()!!)
-+                _mModel = LocalVideoListModel(App.getInstanceUnsafe()!!, null, mCoroutineScope)
++                _mModel = LocalVideoListModel(App.getInstanceUnsafe()!!, null, modelScope)
              }
              return _mModel!!
          }
-@@ -119,7 +121,8 @@ class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoLis
+@@ -119,7 +122,8 @@ class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoLis
      override fun attachToView(view: ILocalVideoListView) {
          super.attachToView(view)
          if (view.getArguments()?.containsKey(KEY_VIDEODIR) == true) {
 -            _mModel = LocalVideoListModel(mContext, view.getArguments()?.getParcelable(KEY_VIDEODIR))
 +            _mModel = LocalVideoListModel(mContext, view.getArguments()?.getParcelable(KEY_VIDEODIR),
-+                    mCoroutineScope)
++                    modelScope)
          }
          mModel.setCallback(this)
          mModel.addOnLoadListener(object : OnLoadListener<Nothing, MutableList<VideoListItem>?> {
-@@ -144,11 +147,6 @@ class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoLis
+@@ -144,11 +148,6 @@ class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoLis
  
      override fun detachFromView(view: ILocalVideoListView) {
          super.detachFromView(view)
@@ -940,7 +1063,7 @@ index cffa775..f23f44e 100644
          mModel.setCallback(null)
          mVideosLoadListener?.let {
              mModel.removeOnLoadListener(it)
-@@ -156,6 +154,15 @@ class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoLis
+@@ -156,6 +155,15 @@ class LocalVideoListPresenter : Presenter<ILocalVideoListView>(), ILocalVideoLis
          }
      }
  
@@ -1018,10 +1141,18 @@ index a91ca20..8a73ea3 100644
 +    }
  }
 diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/VideoMovePresenter.kt b/app/src/main/java/com/liuzhenlin/videos/presenter/VideoMovePresenter.kt
-index 96490cc..e4e6b8b 100644
+index 96490cc..bf493eb 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/presenter/VideoMovePresenter.kt
 +++ b/app/src/main/java/com/liuzhenlin/videos/presenter/VideoMovePresenter.kt
-@@ -25,8 +25,9 @@ interface IVideoMovePresenter : IPresenter<IVideoMoveView> {
+@@ -8,6 +8,7 @@ package com.liuzhenlin.videos.presenter
+ import android.os.Bundle
+ import android.view.ViewGroup
+ import com.liuzhenlin.common.adapter.ImageLoadingListAdapter
++import com.liuzhenlin.common.utils.modelScope
+ import com.liuzhenlin.videos.firstVideoOrNull
+ import com.liuzhenlin.videos.model.VideoMoveRepository
+ import com.liuzhenlin.videos.view.fragment.IVideoMoveView
+@@ -25,8 +26,9 @@ interface IVideoMovePresenter : IPresenter<IVideoMoveView> {
  
      companion object {
          @JvmStatic
@@ -1033,29 +1164,29 @@ index 96490cc..e4e6b8b 100644
          }
      }
  }
-@@ -38,7 +39,8 @@ class VideoMovePresenter : Presenter<IVideoMoveView>(), IVideoMovePresenter,
+@@ -38,7 +40,7 @@ class VideoMovePresenter : Presenter<IVideoMoveView>(), IVideoMovePresenter,
  
      override fun attachToView(view: IVideoMoveView) {
          super.attachToView(view)
 -        mVideoMoveRepository = VideoMoveRepository.create(mContext, view.getArguments())
-+        mVideoMoveRepository =
-+                VideoMoveRepository.create(mContext, mCoroutineScope, view.getArguments())
++        mVideoMoveRepository = VideoMoveRepository.create(mContext, modelScope, view.getArguments())
          mVideoMoveRepository!!.setCallback(this)
      }
  
 diff --git a/app/src/main/java/com/liuzhenlin/videos/presenter/VideoPresenter.java b/app/src/main/java/com/liuzhenlin/videos/presenter/VideoPresenter.java
-index fafb1e9..99c9e4f 100644
+index fafb1e9..0a15024 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/presenter/VideoPresenter.java
 +++ b/app/src/main/java/com/liuzhenlin/videos/presenter/VideoPresenter.java
-@@ -13,6 +13,7 @@ import android.view.ViewGroup;
+@@ -13,6 +13,8 @@ import android.view.ViewGroup;
  import androidx.annotation.NonNull;
  import androidx.annotation.Nullable;
  
++import com.liuzhenlin.common.utils.Coroutines;
 +import com.liuzhenlin.common.utils.JCoroutine;
  import com.liuzhenlin.common.utils.ShareUtils;
  import com.liuzhenlin.common.utils.Synthetic;
  import com.liuzhenlin.texturevideoview.TextureVideoView;
-@@ -27,6 +28,8 @@ import com.liuzhenlin.videos.view.fragment.VideoListItemOpsKt;
+@@ -27,6 +29,8 @@ import com.liuzhenlin.videos.view.fragment.VideoListItemOpsKt;
  import java.io.File;
  import java.util.List;
  
@@ -1064,14 +1195,14 @@ index fafb1e9..99c9e4f 100644
  /**
   * @author 刘振林
   */
-@@ -38,15 +41,19 @@ class VideoPresenter extends Presenter<IVideoView> implements IVideoPresenter,
+@@ -38,15 +42,19 @@ class VideoPresenter extends Presenter<IVideoView> implements IVideoPresenter,
      @Override
      public void attachToView(@NonNull IVideoView view) {
          super.attachToView(view);
 -        mVideoRepository = VideoRepository.create(mContext);
 -        mVideoRepository.setCallback(this);
 +        if (mVideoRepository == null) {
-+            mVideoRepository = VideoRepository.create(mContext, mCoroutineScope);
++            mVideoRepository = VideoRepository.create(mContext, Coroutines.getModelScope(this));
 +            mVideoRepository.setCallback(this);
 +        }
      }
@@ -1090,7 +1221,7 @@ index fafb1e9..99c9e4f 100644
      }
  
      @Override
-@@ -82,13 +89,18 @@ class VideoPresenter extends Presenter<IVideoView> implements IVideoPresenter,
+@@ -82,13 +90,18 @@ class VideoPresenter extends Presenter<IVideoView> implements IVideoPresenter,
          if (repository == null) {
              return;
          }
@@ -2242,10 +2373,10 @@ index 0000000..f44e557
 \ No newline at end of file
 diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/Coroutines.kt b/libraries/common/src/main/java/com/liuzhenlin/common/utils/Coroutines.kt
 new file mode 100644
-index 0000000..fff82ed
+index 0000000..dba1365
 --- /dev/null
 +++ b/libraries/common/src/main/java/com/liuzhenlin/common/utils/Coroutines.kt
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,82 @@
 +/*
 + * Created on 2025-1-6 9:56:52 PM.
 + * Copyright © 2025 刘振林. All rights reserved.
@@ -2270,6 +2401,7 @@ index 0000000..fff82ed
 +import kotlinx.coroutines.Dispatchers
 +import kotlinx.coroutines.SupervisorJob
 +import kotlinx.coroutines.asCoroutineDispatcher
++import kotlinx.coroutines.plus
 +import kotlin.coroutines.CoroutineContext
 +
 +private const val TAG = "Coroutines"
@@ -2289,8 +2421,11 @@ index 0000000..fff82ed
 +        }
 +        return ViewModelAccessor.setTagIfAbsent(this, JOB_KEY,
 +                CloseableCoroutineScope(
-+                        newCoroutineContext("ViewModelScope", Dispatchers.Main.immediate)))
++                        newCoroutineContext("ViewModelScope", Dispatchers.CPU)))
 +    }
++
++public inline val ViewModel.modelScope: CoroutineScope
++    get() = viewModelScope + CoroutineName("ModelScope") + Dispatchers.IO
 +
 +public inline val LifecycleOwner.lifecycleScope: LifecycleCoroutineScope
 +    get() = lifecycle.lifecycleScope
@@ -2314,10 +2449,10 @@ index 0000000..fff82ed
 +    }
 +
 +private fun newCoroutineContext(name: String, dispatcher: CoroutineDispatcher): CoroutineContext {
-+    return CoroutineName(name) + SupervisorJob() + dispatcher + sExceptionHandler
++    return CoroutineName(name) + SupervisorJob() + dispatcher + loggingExceptionHandler
 +}
 +
-+private val sExceptionHandler = CoroutineExceptionHandler { coroutineScope, throwable ->
++private val loggingExceptionHandler = CoroutineExceptionHandler { coroutineScope, throwable ->
 +    Log.w(TAG, coroutineScope[CoroutineName.Key]?.name, throwable)
 +}
 +
@@ -2325,12 +2460,80 @@ index 0000000..fff82ed
 +
 +public val Dispatchers.Single by lazy { Executors.SERIAL_EXECUTOR.asCoroutineDispatcher() }
 \ No newline at end of file
+diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/FileUtils.java b/libraries/common/src/main/java/com/liuzhenlin/common/utils/FileUtils.java
+index 75332f4..82df48a 100644
+--- a/libraries/common/src/main/java/com/liuzhenlin/common/utils/FileUtils.java
++++ b/libraries/common/src/main/java/com/liuzhenlin/common/utils/FileUtils.java
+@@ -19,6 +19,7 @@ import android.provider.MediaStore;
+ import android.util.Log;
+ import android.webkit.MimeTypeMap;
+ 
++import androidx.annotation.GuardedBy;
+ import androidx.annotation.IntRange;
+ import androidx.annotation.NonNull;
+ import androidx.annotation.Nullable;
+@@ -44,11 +45,14 @@ import java.util.Locale;
+ public class FileUtils {
+     private static final String TAG = "FileUtils";
+ 
++    @GuardedBy("FILE_NAME_DATE_REGEX")
+     public static final SimpleDateFormat FILE_DATE_FORMATTER =
+             new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
++    @GuardedBy("FILE_NAME_DATE_REGEX")
+     public static final SimpleDateFormat FILE_DATE_FORMATTER_MS =
+             new SimpleDateFormat("yyyyMMdd_HHmmssSSS", Locale.US);
+ 
++    @GuardedBy("FILE_NAME_DATE_REGEX")
+     public static final Regex FILE_NAME_DATE_REGEX = new Regex(
+             "(?<!\\d)([0-9]{4})[\\.\\-_]?([0-1]\\d)[\\.\\-_]?([0-3]\\d)[\\-_\\s]?"
+                     + "([0-2]\\d)[\\-_]?([0-5]\\d)[\\-_]?([0-5]\\d)[\\-_\\.]?"
+@@ -353,22 +357,24 @@ public class FileUtils {
+ 
+     public static long parseCreationTimeFromFileName(@NonNull String fileName) {
+         String lastMatched = "";
+-        while (FILE_NAME_DATE_REGEX.find(fileName)) {
+-            lastMatched = FILE_NAME_DATE_REGEX.group();
+-        }
+-        // Found the tail subsequence that matches the date regex. This usually is the chief
+-        // date string indicating when the file was created.
+-        if (FILE_NAME_DATE_REGEX.matches(lastMatched)) {
+-            String ms = Utils.emptyIfStringNull(FILE_NAME_DATE_REGEX.group(7));
+-            String datestr = FILE_NAME_DATE_REGEX.group(1) + FILE_NAME_DATE_REGEX.group(2)
+-                    + FILE_NAME_DATE_REGEX.group(3) + "_" + FILE_NAME_DATE_REGEX.group(4)
+-                    + FILE_NAME_DATE_REGEX.group(5) + FILE_NAME_DATE_REGEX.group(6) + ms;
+-            try {
+-                Date date = (!ms.isEmpty() ? FILE_DATE_FORMATTER_MS : FILE_DATE_FORMATTER)
+-                        .parse(datestr);
+-                return date.getTime();
+-            } catch (ParseException e) {
+-                Log.w(TAG, e);
++        synchronized (FILE_NAME_DATE_REGEX) {
++            while (FILE_NAME_DATE_REGEX.find(fileName)) {
++                lastMatched = FILE_NAME_DATE_REGEX.group();
++            }
++            // Found the tail subsequence that matches the date regex. This usually is the chief
++            // date string indicating when the file was created.
++            if (FILE_NAME_DATE_REGEX.matches(lastMatched)) {
++                String ms = Utils.emptyIfStringNull(FILE_NAME_DATE_REGEX.group(7));
++                String datestr = FILE_NAME_DATE_REGEX.group(1) + FILE_NAME_DATE_REGEX.group(2)
++                        + FILE_NAME_DATE_REGEX.group(3) + "_" + FILE_NAME_DATE_REGEX.group(4)
++                        + FILE_NAME_DATE_REGEX.group(5) + FILE_NAME_DATE_REGEX.group(6) + ms;
++                try {
++                    Date date = (!ms.isEmpty() ? FILE_DATE_FORMATTER_MS : FILE_DATE_FORMATTER)
++                            .parse(datestr);
++                    return date.getTime();
++                } catch (ParseException e) {
++                    Log.w(TAG, e);
++                }
+             }
+         }
+         return -1L;
 diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/JCoroutine.java b/libraries/common/src/main/java/com/liuzhenlin/common/utils/JCoroutine.java
 new file mode 100644
-index 0000000..3fb3f05
+index 0000000..1f83d45
 --- /dev/null
 +++ b/libraries/common/src/main/java/com/liuzhenlin/common/utils/JCoroutine.java
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,134 @@
 +/*
 + * Created on 2025-1-4 7:31:41 PM.
 + * Copyright © 2025 刘振林. All rights reserved.
@@ -2387,7 +2590,7 @@ index 0000000..3fb3f05
 +            @Override
 +            public void resumeWith(Object o) {
 +                if (resumeWith != null) {
-+                    withContext(getContext().get(CoroutineDispatcher.Key), () -> {
++                    withContext(getContext(), () -> {
 +                        //noinspection unchecked
 +                        resumeWith.accept((T) o);
 +                    });
@@ -2445,17 +2648,24 @@ index 0000000..3fb3f05
 +            //noinspection DataFlowIssue
 +            return null;
 +        };
-+        try {
-+            runBlocking(context, supplier);
-+        } catch (InterruptedException e) {
-+            // Job was canceled...
-+            Log.w(TAG, e);
-+        }
++        runBlocking(context, supplier);
 +    }
 +
-+    public static <T> T runBlocking(CoroutineContext context, Supplier<T> block)
-+            throws InterruptedException {
-+        return BuildersKt.runBlocking(context, ((coroutineScope, continuation) -> block.get()));
++    /** @noinspection DataFlowIssue*/
++    @Nullable
++    public static <T> T runBlocking(CoroutineContext context, Supplier<T> block) {
++        return runBlocking(context, block, null);
++    }
++
++    /** @noinspection NullableProblems*/
++    public static <T> T runBlocking(
++            CoroutineContext context, Supplier<T> block, T defaultValueIfInterrupted) {
++        try {
++            return BuildersKt.runBlocking(context, ((coroutineScope, continuation) -> block.get()));
++        } catch (InterruptedException e) {
++            Log.w(TAG, e);
++        }
++        return defaultValueIfInterrupted;
 +    }
 +}
 diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/JavaOnly.java b/libraries/common/src/main/java/com/liuzhenlin/common/utils/JavaOnly.java
@@ -2518,6 +2728,70 @@ index 194b83c..5a9c3fd 100644
      @Nullable
      public static <T> T getDeclaredFieldValue(
              @NonNull Class<?> clazz, @Nullable Object obj, @NonNull String fieldName) {
+diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/Regex.java b/libraries/common/src/main/java/com/liuzhenlin/common/utils/Regex.java
+index cf9a443..b87c2fd 100644
+--- a/libraries/common/src/main/java/com/liuzhenlin/common/utils/Regex.java
++++ b/libraries/common/src/main/java/com/liuzhenlin/common/utils/Regex.java
+@@ -53,37 +53,37 @@ public class Regex {
+         return mMatcher.end(group);
+     }
+ 
+-    public synchronized boolean matches(String input) {
++    public boolean matches(String input) {
+         ensureMatcherInput(input);
+         return mMatcher.matches();
+     }
+ 
+-    public synchronized boolean find(String input) {
++    public boolean find(String input) {
+         ensureMatcherInput(input);
+         return mMatcher.find();
+     }
+ 
+-    public synchronized boolean find(String input, int start) {
++    public boolean find(String input, int start) {
+         ensureMatcherInput(input);
+         return mMatcher.find(start);
+     }
+ 
+-    public synchronized boolean lookingAt(String input) {
++    public boolean lookingAt(String input) {
+         ensureMatcherInput(input);
+         return mMatcher.lookingAt();
+     }
+ 
+     @Nullable
+-    public synchronized String group() {
++    public String group() {
+         return mMatcher.group();
+     }
+ 
+     @Nullable
+-    public synchronized String group(int group) {
++    public String group(int group) {
+         return mMatcher.group(group);
+     }
+ 
+-    public synchronized int groupCount() {
++    public int groupCount() {
+         return mMatcher.groupCount();
+     }
+ 
+@@ -106,12 +106,12 @@ public class Regex {
+         return list.toArray(Consts.EMPTY_STRING_ARRAY);
+     }
+ 
+-    public synchronized String replaceFirst(String input, String replacement) {
++    public String replaceFirst(String input, String replacement) {
+         ensureMatcherInput(input);
+         return mMatcher.replaceFirst(replacement);
+     }
+ 
+-    public synchronized String replaceAll(String input, String replacement) {
++    public String replaceAll(String input, String replacement) {
+         ensureMatcherInput(input);
+         return mMatcher.replaceAll(replacement);
+     }
 -- 
 2.47.0.windows.1
 
