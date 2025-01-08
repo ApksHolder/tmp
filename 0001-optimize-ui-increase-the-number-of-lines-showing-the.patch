@@ -1,4 +1,4 @@
-From 434ec088e44499b4eb8de0c63eb380eff34436cf Mon Sep 17 00:00:00 2001
+From 67cf52a42dab76ccd3c627ed25dd74ef1b327242 Mon Sep 17 00:00:00 2001
 From: lzl <2233788867@qq.com>
 Date: Tue, 7 Jan 2025 07:01:44 +0800
 Subject: [PATCH] optimize (ui): increase the number of lines showing the
@@ -6,51 +6,51 @@ Subject: [PATCH] optimize (ui): increase the number of lines showing the
 
 ---
  app/build.gradle                              |   2 -
- .../main/java/com/liuzhenlin/videos/App.java  |   7 +-
- .../com/liuzhenlin/videos/dao/AppPrefs.java   |   7 +-
+ .../main/java/com/liuzhenlin/videos/App.java  |   1 -
  .../com/liuzhenlin/videos/model/BaseModel.kt  |   4 +-
  .../videos/model/BaseRepository.java          |  12 +-
  .../videos/model/FeedbackRepository.java      |   9 +-
- .../videos/model/FeedbackRepositoryImpl.java  |  31 ++--
- .../model/LocalSearchedVideoListModel.kt      |  66 +++++---
- .../videos/model/LocalVideoListModel.kt       |  90 ++++++++---
+ .../videos/model/FeedbackRepositoryImpl.java  |  31 +-
+ .../model/LocalSearchedVideoListModel.kt      |  66 +-
+ .../videos/model/LocalVideoListModel.kt       |  90 +-
  .../videos/model/OnlineVideoListModel.kt      |   3 +-
- .../videos/model/VideoMoveRepository.kt       |  18 ++-
+ .../videos/model/VideoMoveRepository.kt       |  18 +-
  .../videos/model/VideoRepository.java         |   8 +-
- .../videos/model/VideoRepositoryImpl.java     | 145 ++++++++++--------
- .../videos/presenter/FeedbackPresenter.java   |  20 ++-
+ .../videos/model/VideoRepositoryImpl.java     | 145 +--
+ .../videos/presenter/FeedbackPresenter.java   |  20 +-
  .../videos/presenter/IFeedbackPresenter.java  |   5 +-
  .../videos/presenter/IVideoPresenter.java     |   5 +-
  .../presenter/LocalSearchedVideosPresenter.kt |  15 +-
- .../presenter/LocalVideoListPresenter.kt      |  26 ++--
- .../videos/presenter/Presenter.java           |  38 ++++-
+ .../presenter/LocalVideoListPresenter.kt      |  26 +-
+ .../videos/presenter/Presenter.java           |  38 +-
  .../videos/presenter/VideoMovePresenter.kt    |   8 +-
- .../videos/presenter/VideoPresenter.java      |  39 +++--
+ .../videos/presenter/VideoPresenter.java      |  39 +-
  .../view/activity/FeedbackActivity.java       |   4 +-
- .../videos/view/activity/MainActivity.java    |  47 ++++--
- .../videos/view/activity/VideoActivity.java   | 122 ++++++++-------
- .../activity/startup/LaunchProcessor.java     |   7 +-
- .../fragment/LocalSearchedVideosFragment.kt   |  62 ++++----
- .../view/fragment/LocalVideoListFragment.kt   |  75 +++++----
- .../view/fragment/LocalVideosFragment.kt      |  39 +++--
- .../videos/view/fragment/VideoMoveFragment.kt |  30 ++--
+ .../videos/view/activity/MainActivity.java    |  47 +-
+ .../videos/view/activity/VideoActivity.java   | 122 +--
+ .../fragment/LocalSearchedVideosFragment.kt   |  62 +-
+ .../view/fragment/LocalVideoListFragment.kt   |  75 +-
+ .../view/fragment/LocalVideosFragment.kt      |  39 +-
+ .../videos/view/fragment/VideoMoveFragment.kt |  30 +-
  common_build.gradle                           |   2 +
- .../LifecycleCoroutineScopeImplAccessor.java  |  24 +++
- .../androidx/lifecycle/ViewModelAccessor.java |  25 +++
- .../common/utils/CloseableCoroutineScope.kt   |  20 +++
- .../com/liuzhenlin/common/utils/Coroutines.kt |  82 ++++++++++
- .../liuzhenlin/common/utils/FileUtils.java    |  38 +++--
- .../liuzhenlin/common/utils/JCoroutine.java   | 134 ++++++++++++++++
- .../com/liuzhenlin/common/utils/JavaOnly.java |  22 +++
- .../common/utils/ReflectionUtils.java         |  14 ++
- .../com/liuzhenlin/common/utils/Regex.java    |  18 +--
- 39 files changed, 940 insertions(+), 383 deletions(-)
+ .../LifecycleCoroutineScopeImplAccessor.java  |  24 +
+ .../androidx/lifecycle/ViewModelAccessor.java |  25 +
+ .../common/utils/CloseableCoroutineScope.kt   |  20 +
+ .../com/liuzhenlin/common/utils/Coroutines.kt | 198 +++++
+ .../liuzhenlin/common/utils/JCoroutine.java   | 134 +++
+ .../com/liuzhenlin/common/utils/JavaOnly.java |  22 +
+ .../common/utils/ReflectionUtils.java         |  28 +
+ .../web/youtube/YoutubePlaybackService.java   | 831 ------------------
+ .../web/youtube/YoutubePlaybackService.kt     | 791 +++++++++++++++++
+ 37 files changed, 1815 insertions(+), 1184 deletions(-)
  create mode 100644 libraries/common/src/main/java/androidx/lifecycle/LifecycleCoroutineScopeImplAccessor.java
  create mode 100644 libraries/common/src/main/java/androidx/lifecycle/ViewModelAccessor.java
  create mode 100644 libraries/common/src/main/java/com/liuzhenlin/common/utils/CloseableCoroutineScope.kt
  create mode 100644 libraries/common/src/main/java/com/liuzhenlin/common/utils/Coroutines.kt
  create mode 100644 libraries/common/src/main/java/com/liuzhenlin/common/utils/JCoroutine.java
  create mode 100644 libraries/common/src/main/java/com/liuzhenlin/common/utils/JavaOnly.java
+ delete mode 100644 web/src/main/java/com/liuzhenlin/videos/web/youtube/YoutubePlaybackService.java
+ create mode 100644 web/src/main/java/com/liuzhenlin/videos/web/youtube/YoutubePlaybackService.kt
 
 diff --git a/app/build.gradle b/app/build.gradle
 index eff18ff..73d0ce6 100644
@@ -71,72 +71,17 @@ index eff18ff..73d0ce6 100644
      implementation 'androidx.core:core-splashscreen:1.0.1'
  
 diff --git a/app/src/main/java/com/liuzhenlin/videos/App.java b/app/src/main/java/com/liuzhenlin/videos/App.java
-index ddf8fc8..5164f94 100644
+index ddf8fc8..fe52c8f 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/App.java
 +++ b/app/src/main/java/com/liuzhenlin/videos/App.java
-@@ -23,9 +23,10 @@ import com.bumptech.glide.Glide;
- import com.liuzhenlin.common.Configs;
- import com.liuzhenlin.common.compat.ApplicationCompat;
- import com.liuzhenlin.common.listener.OnSystemUiNightModeChangedListener;
-+import com.liuzhenlin.common.utils.AppScope;
- import com.liuzhenlin.common.utils.DensityUtils;
--import com.liuzhenlin.common.utils.Executors;
- import com.liuzhenlin.common.utils.InternetResourceLoadTask;
-+import com.liuzhenlin.common.utils.JCoroutine;
- import com.liuzhenlin.common.utils.LanguageUtils;
- import com.liuzhenlin.common.utils.ListenerSet;
- import com.liuzhenlin.common.utils.ThemeUtils;
-@@ -37,6 +38,7 @@ import com.liuzhenlin.videos.web.youtube.YoutubePlaybackService;
- 
- import java.util.Locale;
- 
-+import kotlinx.coroutines.Dispatchers;
- import pub.devrel.easypermissions.EasyPermissions;
- 
- /**
-@@ -71,7 +73,8 @@ public class App extends Application {
+@@ -70,7 +70,6 @@ public class App extends Application {
+     public void onCreate() {
          super.onCreate();
          sApp = this;
- 
--        Executors.THREAD_POOL_EXECUTOR.execute(new CrashMailReporter(this)::send);
-+        JCoroutine.launch(AppScope.INSTANCE, Dispatchers.getIO(),
-+                new CrashMailReporter(this)::send);
+-
+         Executors.THREAD_POOL_EXECUTOR.execute(new CrashMailReporter(this)::send);
          Thread.setDefaultUncaughtExceptionHandler(LogOnCrashHandler.INSTANCE.get(this));
  
-         mSystemUiNightMode = ThemeUtils.isNightMode(this);
-diff --git a/app/src/main/java/com/liuzhenlin/videos/dao/AppPrefs.java b/app/src/main/java/com/liuzhenlin/videos/dao/AppPrefs.java
-index aec0f2f..a2b7d40 100644
---- a/app/src/main/java/com/liuzhenlin/videos/dao/AppPrefs.java
-+++ b/app/src/main/java/com/liuzhenlin/videos/dao/AppPrefs.java
-@@ -20,8 +20,9 @@ import com.bumptech.glide.util.Synthetic;
- import com.liuzhenlin.common.Configs;
- import com.liuzhenlin.common.Consts;
- import com.liuzhenlin.common.utils.AESUtils;
--import com.liuzhenlin.common.utils.Executors;
-+import com.liuzhenlin.common.utils.AppScope;
- import com.liuzhenlin.common.utils.IOUtils;
-+import com.liuzhenlin.common.utils.JCoroutine;
- import com.liuzhenlin.common.utils.LanguageUtils;
- import com.liuzhenlin.common.utils.Singleton;
- import com.liuzhenlin.videos.App;
-@@ -42,6 +43,8 @@ import java.util.concurrent.locks.Lock;
- import java.util.concurrent.locks.ReadWriteLock;
- import java.util.concurrent.locks.ReentrantReadWriteLock;
- 
-+import kotlinx.coroutines.Dispatchers;
-+
- import static com.liuzhenlin.videos.Consts.SORT_MODE_NAME_ASC;
- 
- /**
-@@ -178,7 +181,7 @@ public final class AppPrefs {
-                         if (TextUtils.isEmpty(guid)) {
-                             guid = UUID.randomUUID().toString();
-                             String finalGuid = guid;
--                            Executors.THREAD_POOL_EXECUTOR.execute(() -> {
-+                            JCoroutine.launch(AppScope.INSTANCE, Dispatchers.getIO(), () -> {
-                                 Writer writer = null;
-                                 Exception ex = null;
-                                 try {
 diff --git a/app/src/main/java/com/liuzhenlin/videos/model/BaseModel.kt b/app/src/main/java/com/liuzhenlin/videos/model/BaseModel.kt
 index 9da51e4..63522f7 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/model/BaseModel.kt
@@ -1566,39 +1511,6 @@ index 5c3ce05..7abaf7e 100644
              }
          }
      }
-diff --git a/app/src/main/java/com/liuzhenlin/videos/view/activity/startup/LaunchProcessor.java b/app/src/main/java/com/liuzhenlin/videos/view/activity/startup/LaunchProcessor.java
-index 339f9eb..6fdc70b 100644
---- a/app/src/main/java/com/liuzhenlin/videos/view/activity/startup/LaunchProcessor.java
-+++ b/app/src/main/java/com/liuzhenlin/videos/view/activity/startup/LaunchProcessor.java
-@@ -13,8 +13,9 @@ import android.os.Build;
- import androidx.annotation.NonNull;
- import androidx.lifecycle.LifecycleOwner;
- 
--import com.liuzhenlin.common.utils.Executors;
-+import com.liuzhenlin.common.utils.AppScope;
- import com.liuzhenlin.common.utils.FileUtils;
-+import com.liuzhenlin.common.utils.JCoroutine;
- import com.liuzhenlin.common.utils.Utils;
- import com.liuzhenlin.videos.App;
- import com.liuzhenlin.videos.LegacyExternalStorageDataMigrator;
-@@ -23,6 +24,8 @@ import com.liuzhenlin.videos.view.activity.MainActivity;
- import com.liuzhenlin.videos.view.activity.VideoActivity;
- import com.liuzhenlin.videos.web.youtube.YoutubePlaybackService;
- 
-+import kotlinx.coroutines.Dispatchers;
-+
- public class LaunchProcessor<H extends Activity & LifecycleOwner> extends BaseProcessor<H> {
- 
-     @Override
-@@ -40,7 +43,7 @@ public class LaunchProcessor<H extends Activity & LifecycleOwner> extends BasePr
-             if (Utils.getAppTargetSdkVersion(mChain.host) >= Build.VERSION_CODES.R
-                     && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                     && !appPrefs.isLegacyExternalStorageDataMigrated()) {
--                Executors.THREAD_POOL_EXECUTOR.execute(() -> {
-+                JCoroutine.launch(AppScope.INSTANCE, Dispatchers.getIO(), () -> {
-                     boolean migrated = true;
-                     if (hasAllFilesAccess) {
-                         migrated = new LegacyExternalStorageDataMigrator(chain.host).migrate();
 diff --git a/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalSearchedVideosFragment.kt b/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalSearchedVideosFragment.kt
 index 2c55026..af6e3b5 100644
 --- a/app/src/main/java/com/liuzhenlin/videos/view/fragment/LocalSearchedVideosFragment.kt
@@ -2373,10 +2285,10 @@ index 0000000..f44e557
 \ No newline at end of file
 diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/Coroutines.kt b/libraries/common/src/main/java/com/liuzhenlin/common/utils/Coroutines.kt
 new file mode 100644
-index 0000000..dba1365
+index 0000000..39ff39c
 --- /dev/null
 +++ b/libraries/common/src/main/java/com/liuzhenlin/common/utils/Coroutines.kt
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,198 @@
 +/*
 + * Created on 2025-1-6 9:56:52 PM.
 + * Copyright © 2025 刘振林. All rights reserved.
@@ -2386,6 +2298,9 @@ index 0000000..dba1365
 +package com.liuzhenlin.common.utils
 +
 +import android.annotation.SuppressLint
++import android.os.AsyncTask
++import android.os.Binder
++import android.os.Process
 +import android.util.Log
 +import androidx.lifecycle.Lifecycle
 +import androidx.lifecycle.LifecycleCoroutineScope
@@ -2393,20 +2308,24 @@ index 0000000..dba1365
 +import androidx.lifecycle.LifecycleOwner
 +import androidx.lifecycle.ViewModel
 +import androidx.lifecycle.ViewModelAccessor
-+
 +import kotlinx.coroutines.CoroutineDispatcher
 +import kotlinx.coroutines.CoroutineExceptionHandler
 +import kotlinx.coroutines.CoroutineName
 +import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Deferred
 +import kotlinx.coroutines.Dispatchers
 +import kotlinx.coroutines.SupervisorJob
 +import kotlinx.coroutines.asCoroutineDispatcher
++import kotlinx.coroutines.async
++import kotlinx.coroutines.launch
 +import kotlinx.coroutines.plus
++import java.util.concurrent.Callable
++import java.util.concurrent.FutureTask
 +import kotlin.coroutines.CoroutineContext
 +
 +private const val TAG = "Coroutines"
 +
-+private const val JOB_KEY = "com.liuzhenlin.common.utils.Coroutines.viewModelScope"
++private const val KEY_VIEW_MODEL_SCOPE = "com.liuzhenlin.common.utils.Coroutines.viewModelScope"
 +
 +object AppScope : CoroutineScope {
 +    override val coroutineContext: CoroutineContext =
@@ -2415,11 +2334,11 @@ index 0000000..dba1365
 +
 +public val ViewModel.viewModelScope: CoroutineScope
 +    get() {
-+        val scope: CoroutineScope? = ViewModelAccessor.getTag(this, JOB_KEY)
++        val scope: CoroutineScope? = ViewModelAccessor.getTag(this, KEY_VIEW_MODEL_SCOPE)
 +        if (scope != null) {
 +            return scope
 +        }
-+        return ViewModelAccessor.setTagIfAbsent(this, JOB_KEY,
++        return ViewModelAccessor.setTagIfAbsent(this, KEY_VIEW_MODEL_SCOPE,
 +                CloseableCoroutineScope(
 +                        newCoroutineContext("ViewModelScope", Dispatchers.CPU)))
 +    }
@@ -2459,75 +2378,116 @@ index 0000000..dba1365
 +public inline val Dispatchers.CPU get() = Dispatchers.Default
 +
 +public val Dispatchers.Single by lazy { Executors.SERIAL_EXECUTOR.asCoroutineDispatcher() }
-\ No newline at end of file
-diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/FileUtils.java b/libraries/common/src/main/java/com/liuzhenlin/common/utils/FileUtils.java
-index 75332f4..82df48a 100644
---- a/libraries/common/src/main/java/com/liuzhenlin/common/utils/FileUtils.java
-+++ b/libraries/common/src/main/java/com/liuzhenlin/common/utils/FileUtils.java
-@@ -19,6 +19,7 @@ import android.provider.MediaStore;
- import android.util.Log;
- import android.webkit.MimeTypeMap;
- 
-+import androidx.annotation.GuardedBy;
- import androidx.annotation.IntRange;
- import androidx.annotation.NonNull;
- import androidx.annotation.Nullable;
-@@ -44,11 +45,14 @@ import java.util.Locale;
- public class FileUtils {
-     private static final String TAG = "FileUtils";
- 
-+    @GuardedBy("FILE_NAME_DATE_REGEX")
-     public static final SimpleDateFormat FILE_DATE_FORMATTER =
-             new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
-+    @GuardedBy("FILE_NAME_DATE_REGEX")
-     public static final SimpleDateFormat FILE_DATE_FORMATTER_MS =
-             new SimpleDateFormat("yyyyMMdd_HHmmssSSS", Locale.US);
- 
-+    @GuardedBy("FILE_NAME_DATE_REGEX")
-     public static final Regex FILE_NAME_DATE_REGEX = new Regex(
-             "(?<!\\d)([0-9]{4})[\\.\\-_]?([0-1]\\d)[\\.\\-_]?([0-3]\\d)[\\-_\\s]?"
-                     + "([0-2]\\d)[\\-_]?([0-5]\\d)[\\-_]?([0-5]\\d)[\\-_\\.]?"
-@@ -353,22 +357,24 @@ public class FileUtils {
- 
-     public static long parseCreationTimeFromFileName(@NonNull String fileName) {
-         String lastMatched = "";
--        while (FILE_NAME_DATE_REGEX.find(fileName)) {
--            lastMatched = FILE_NAME_DATE_REGEX.group();
--        }
--        // Found the tail subsequence that matches the date regex. This usually is the chief
--        // date string indicating when the file was created.
--        if (FILE_NAME_DATE_REGEX.matches(lastMatched)) {
--            String ms = Utils.emptyIfStringNull(FILE_NAME_DATE_REGEX.group(7));
--            String datestr = FILE_NAME_DATE_REGEX.group(1) + FILE_NAME_DATE_REGEX.group(2)
--                    + FILE_NAME_DATE_REGEX.group(3) + "_" + FILE_NAME_DATE_REGEX.group(4)
--                    + FILE_NAME_DATE_REGEX.group(5) + FILE_NAME_DATE_REGEX.group(6) + ms;
--            try {
--                Date date = (!ms.isEmpty() ? FILE_DATE_FORMATTER_MS : FILE_DATE_FORMATTER)
--                        .parse(datestr);
--                return date.getTime();
--            } catch (ParseException e) {
--                Log.w(TAG, e);
-+        synchronized (FILE_NAME_DATE_REGEX) {
-+            while (FILE_NAME_DATE_REGEX.find(fileName)) {
-+                lastMatched = FILE_NAME_DATE_REGEX.group();
-+            }
-+            // Found the tail subsequence that matches the date regex. This usually is the chief
-+            // date string indicating when the file was created.
-+            if (FILE_NAME_DATE_REGEX.matches(lastMatched)) {
-+                String ms = Utils.emptyIfStringNull(FILE_NAME_DATE_REGEX.group(7));
-+                String datestr = FILE_NAME_DATE_REGEX.group(1) + FILE_NAME_DATE_REGEX.group(2)
-+                        + FILE_NAME_DATE_REGEX.group(3) + "_" + FILE_NAME_DATE_REGEX.group(4)
-+                        + FILE_NAME_DATE_REGEX.group(5) + FILE_NAME_DATE_REGEX.group(6) + ms;
-+                try {
-+                    Date date = (!ms.isEmpty() ? FILE_DATE_FORMATTER_MS : FILE_DATE_FORMATTER)
-+                            .parse(datestr);
-+                    return date.getTime();
-+                } catch (ParseException e) {
-+                    Log.w(TAG, e);
++
++@JvmName("executeAsyncTask")
++fun <Result> AsyncTask<*, *, Result>.executeOnCoroutine(
++        scope: CoroutineScope, context: CoroutineContext, vararg params: Any)
++: Deferred<Result?> {
++    val status = status
++    if (status != AsyncTask.Status.PENDING) {
++        when (status) {
++            AsyncTask.Status.RUNNING ->
++                throw IllegalStateException("Cannot execute task: the task is already running.")
++            AsyncTask.Status.FINISHED ->
++                throw IllegalStateException(
++                        "Cannot execute task: the task has already been executed " +
++                                "(a task can be executed only once)")
++            else -> {}
++        }
++    }
++    statusField?.set(this, AsyncTask.Status.RUNNING)
++
++    onPreExecuteMethod?.invoke(this)
++
++    @Suppress("UNCHECKED_CAST")
++    val futureTask: FutureTask<Result>? = futureField?.get(this) as FutureTask<Result>?
++    if (futureTask != null && params.isNotEmpty()) {
++        workerParamsField?.set(workerField?.get(this), params)
++            ?: {
++                val workerRunnable = object : WorkerRunnable<Any, Result>() {
++                    override fun call(): Result? {
++                        taskInvokedField?.set(this@executeOnCoroutine, true)
++                        var result: Result? = null
++                        try {
++                            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
++                            @Suppress("UNCHECKED_CAST")
++                            result = doInBackgroundMethod?.invoke(this@executeOnCoroutine, mParams)
++                                    as Result?
++                            Binder.flushPendingCommands()
++                        } catch (tr: Throwable) {
++                            cancel(false)
++                            throw tr
++                        } finally {
++                            postResult(result)
++                        }
++                        return result
++                    }
 +                }
-             }
-         }
-         return -1L;
++                workerRunnable.mParams = arrayOf(params)
++                futureTask.callableField?.set(futureTask, workerRunnable)
++            }
++    }
++    return scope.async(context) {
++        if (futureTask != null) {
++            futureTask.run()
++            return@async futureTask.get()
++        }
++        return@async null
++    }
++}
++
++private val AsyncTask<*, *, *>.statusField by lazy {
++    ReflectionUtils.getDeclaredField(AsyncTask::class.java, "mStatus")
++}
++private val AsyncTask<*, *, *>.taskInvokedField by lazy {
++    ReflectionUtils.getDeclaredField(AsyncTask::class.java, "mTaskInvoked")
++}
++private val AsyncTask<*, *, *>.workerField by lazy {
++    ReflectionUtils.getDeclaredField(AsyncTask::class.java, "mWorker")
++}
++private val AsyncTask<*, *, *>.workerParamsField by lazy {
++    val workerRunnableClass = ReflectionUtils.getDeclaredClass(AsyncTask::class.java,
++            "android.os.AsyncTask\$WorkerRunnable")
++    if (workerRunnableClass != null) {
++        return@lazy ReflectionUtils.getDeclaredField(workerRunnableClass, "mParams")
++    }
++    return@lazy null
++}
++private val AsyncTask<*, *, *>.futureField by lazy {
++    ReflectionUtils.getDeclaredField(AsyncTask::class.java, "mFuture")
++}
++private val FutureTask<*>.callableField by lazy {
++    ReflectionUtils.getDeclaredField(FutureTask::class.java, "callable")
++}
++private val AsyncTask<*, *, *>.onPreExecuteMethod by lazy {
++    ReflectionUtils.getDeclaredMethod(AsyncTask::class.java, "onPreExecute")
++}
++private val AsyncTask<*, *, *>.doInBackgroundMethod by lazy {
++    ReflectionUtils.getDeclaredMethod(AsyncTask::class.java, "doInBackground",
++            Array<Any>::class.java)
++}
++private val AsyncTask<*, *, *>.onCancelledMethod by lazy {
++    ReflectionUtils.getDeclaredMethod(AsyncTask::class.java, "onCancelled", Any::class.java)
++}
++private val AsyncTask<*, *, *>.onPostExecuteMethod by lazy {
++    ReflectionUtils.getDeclaredMethod(AsyncTask::class.java, "onPostExecute", Any::class.java)
++}
++
++private fun <Result> AsyncTask<*, *, Result>.postResult(result: Result?) {
++    AppScope.launch(Dispatchers.Main) {
++        if (isCancelled) {
++            onCancelledMethod?.invoke(this@postResult, result)
++        } else {
++            onPostExecuteMethod?.invoke(this@postResult, result)
++        }
++        statusField?.set(this@postResult, AsyncTask.Status.FINISHED)
++    }
++}
++
++private abstract class WorkerRunnable<Params, Result> : Callable<Result> {
++    var mParams: Array<Params>? = null
++}
+\ No newline at end of file
 diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/JCoroutine.java b/libraries/common/src/main/java/com/liuzhenlin/common/utils/JCoroutine.java
 new file mode 100644
 index 0000000..1f83d45
@@ -2697,10 +2657,15 @@ index 0000000..7ab640f
 +public @interface JavaOnly {
 +}
 diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/ReflectionUtils.java b/libraries/common/src/main/java/com/liuzhenlin/common/utils/ReflectionUtils.java
-index 194b83c..5a9c3fd 100644
+index 194b83c..d834871 100644
 --- a/libraries/common/src/main/java/com/liuzhenlin/common/utils/ReflectionUtils.java
 +++ b/libraries/common/src/main/java/com/liuzhenlin/common/utils/ReflectionUtils.java
-@@ -8,6 +8,7 @@ package com.liuzhenlin.common.utils;
+@@ -5,9 +5,12 @@
+ 
+ package com.liuzhenlin.common.utils;
+ 
++import android.text.TextUtils;
++
  import androidx.annotation.NonNull;
  import androidx.annotation.Nullable;
  
@@ -2708,7 +2673,7 @@ index 194b83c..5a9c3fd 100644
  import java.lang.reflect.Field;
  import java.lang.reflect.Method;
  import java.lang.reflect.Modifier;
-@@ -93,6 +94,19 @@ public class ReflectionUtils {
+@@ -93,6 +96,31 @@ public class ReflectionUtils {
          return null;
      }
  
@@ -2725,73 +2690,1657 @@ index 194b83c..5a9c3fd 100644
 +        return null;
 +    }
 +
++    @Nullable
++    public static Class<?> getDeclaredClass(@NonNull Class<?> clazz, @Nullable String className) {
++        if (!TextUtils.isEmpty(className)) {
++            for (Class<?> c : clazz.getDeclaredClasses()) {
++                if (c.getName().equals(className)) {
++                    return c;
++                }
++            }
++        }
++        return null;
++    }
++
      @Nullable
      public static <T> T getDeclaredFieldValue(
              @NonNull Class<?> clazz, @Nullable Object obj, @NonNull String fieldName) {
-diff --git a/libraries/common/src/main/java/com/liuzhenlin/common/utils/Regex.java b/libraries/common/src/main/java/com/liuzhenlin/common/utils/Regex.java
-index cf9a443..b87c2fd 100644
---- a/libraries/common/src/main/java/com/liuzhenlin/common/utils/Regex.java
-+++ b/libraries/common/src/main/java/com/liuzhenlin/common/utils/Regex.java
-@@ -53,37 +53,37 @@ public class Regex {
-         return mMatcher.end(group);
-     }
- 
--    public synchronized boolean matches(String input) {
-+    public boolean matches(String input) {
-         ensureMatcherInput(input);
-         return mMatcher.matches();
-     }
- 
--    public synchronized boolean find(String input) {
-+    public boolean find(String input) {
-         ensureMatcherInput(input);
-         return mMatcher.find();
-     }
- 
--    public synchronized boolean find(String input, int start) {
-+    public boolean find(String input, int start) {
-         ensureMatcherInput(input);
-         return mMatcher.find(start);
-     }
- 
--    public synchronized boolean lookingAt(String input) {
-+    public boolean lookingAt(String input) {
-         ensureMatcherInput(input);
-         return mMatcher.lookingAt();
-     }
- 
-     @Nullable
--    public synchronized String group() {
-+    public String group() {
-         return mMatcher.group();
-     }
- 
-     @Nullable
--    public synchronized String group(int group) {
-+    public String group(int group) {
-         return mMatcher.group(group);
-     }
- 
--    public synchronized int groupCount() {
-+    public int groupCount() {
-         return mMatcher.groupCount();
-     }
- 
-@@ -106,12 +106,12 @@ public class Regex {
-         return list.toArray(Consts.EMPTY_STRING_ARRAY);
-     }
- 
--    public synchronized String replaceFirst(String input, String replacement) {
-+    public String replaceFirst(String input, String replacement) {
-         ensureMatcherInput(input);
-         return mMatcher.replaceFirst(replacement);
-     }
- 
--    public synchronized String replaceAll(String input, String replacement) {
-+    public String replaceAll(String input, String replacement) {
-         ensureMatcherInput(input);
-         return mMatcher.replaceAll(replacement);
-     }
+diff --git a/web/src/main/java/com/liuzhenlin/videos/web/youtube/YoutubePlaybackService.java b/web/src/main/java/com/liuzhenlin/videos/web/youtube/YoutubePlaybackService.java
+deleted file mode 100644
+index fd274c2..0000000
+--- a/web/src/main/java/com/liuzhenlin/videos/web/youtube/YoutubePlaybackService.java
++++ /dev/null
+@@ -1,831 +0,0 @@
+-/*
+- * Created on 2022-2-18 5:54:39 PM.
+- * Copyright © 2022 刘振林. All rights reserved.
+- */
+-
+-package com.liuzhenlin.videos.web.youtube;
+-
+-import android.annotation.SuppressLint;
+-import android.app.Notification;
+-import android.app.NotificationManager;
+-import android.app.PendingIntent;
+-import android.app.Service;
+-import android.content.ComponentName;
+-import android.content.Context;
+-import android.content.Intent;
+-import android.graphics.Bitmap;
+-import android.media.AudioManager;
+-import android.os.Build;
+-import android.os.Bundle;
+-import android.os.Handler;
+-import android.os.IBinder;
+-import android.os.Looper;
+-import android.os.Message;
+-import android.os.Messenger;
+-import android.os.SystemClock;
+-import android.text.TextUtils;
+-import android.view.View;
+-import android.webkit.WebView;
+-import android.widget.RemoteViews;
+-
+-import androidx.annotation.NonNull;
+-import androidx.annotation.Nullable;
+-import androidx.core.app.ActivityCompat;
+-import androidx.core.app.NotificationCompat;
+-import androidx.core.util.Consumer;
+-
+-import com.liuzhenlin.common.Consts;
+-import com.liuzhenlin.common.compat.AudioManagerCompat;
+-import com.liuzhenlin.common.compat.RemoteViewsCompat;
+-import com.liuzhenlin.common.notification.style.DecoratedMediaCustomViewStyle;
+-import com.liuzhenlin.common.receiver.HeadsetEventsReceiver;
+-import com.liuzhenlin.common.receiver.MediaButtonEventHandler;
+-import com.liuzhenlin.common.receiver.MediaButtonEventReceiver;
+-import com.liuzhenlin.common.utils.Executors;
+-import com.liuzhenlin.common.utils.InternetResourceLoadTask;
+-import com.liuzhenlin.common.utils.ListenerSet;
+-import com.liuzhenlin.common.utils.NotificationChannelManager;
+-import com.liuzhenlin.common.utils.SerialExecutor;
+-import com.liuzhenlin.common.utils.Synthetic;
+-import com.liuzhenlin.common.utils.ThemeUtils;
+-import com.liuzhenlin.common.utils.Utils;
+-import com.liuzhenlin.videos.web.AndroidWebView;
+-import com.liuzhenlin.videos.web.R;
+-import com.liuzhenlin.videos.web.bean.Playlist;
+-import com.liuzhenlin.videos.web.bean.Video;
+-import com.liuzhenlin.videos.web.player.Constants;
+-import com.liuzhenlin.videos.web.player.PlayerWebView;
+-import com.liuzhenlin.videos.web.player.Settings;
+-import com.liuzhenlin.videos.web.player.WebPlayer;
+-
+-import org.json.JSONException;
+-import org.json.JSONObject;
+-
+-import java.util.concurrent.CountDownLatch;
+-import java.util.concurrent.Executor;
+-
+-import static com.liuzhenlin.common.utils.Utils.emptyIfStringNull;
+-
+-public class YoutubePlaybackService extends Service implements PlayerListener {
+-
+-    private static final int ID_NOTIFICATION = 20220216;
+-
+-    @SuppressLint("StaticFieldLeak")
+-    private static YoutubePlaybackService sInstance;
+-    private volatile boolean mRunning;
+-
+-    private Context mContext;
+-
+-    @Nullable /*package*/ PlayerWebView mView;
+-
+-    @Nullable @Synthetic WebPlayer mPlayer;
+-    /*package*/ boolean mPlayerReady;
+-
+-    private long mSeekOnPlayerReady = Constants.UNKNOWN;
+-
+-    private String mNotiVideoId = "";
+-    private String mVideoId = "";
+-    private String mPlaylistId = "";
+-
+-    private int mLinkType;
+-
+-    private int mPlaylistSize;
+-    private int mPlaylistIndex;
+-
+-    private volatile Video mVideo = EMPTY_VIDEO;
+-    /*package*/ static final Video EMPTY_VIDEO = new Video();
+-
+-    @Youtube.PlayingStatus /*package*/ volatile int mPlayingStatus = Youtube.PlayingStatus.UNSTARTED;
+-    private int mLastPlayingStatus = mPlayingStatus;
+-
+-    private boolean mReplayVideo;
+-    private boolean mReplayPlaylist;
+-
+-    private volatile int mPlayPauseBtnImgSrc = R.drawable.ic_pause_white_24dp;
+-    private volatile int mPlayPauseBtnContentDesc = R.string.pause;
+-
+-    private AudioManager mAudioManager;
+-    private HeadsetEventsReceiver mHeadsetEventsReceiver;
+-    private MediaButtonEventHandler mMediaButtonEventHandler;
+-    private ComponentName mMediaButtonEventReceiverComponent;
+-
+-    private ListenerSet<PlayerListener> mListeners;
+-
+-    private static final Executor NOTIFICATION_EXECUTOR = new SerialExecutor() {
+-        @Override
+-        public synchronized void execute(@NonNull Runnable r) {
+-            // Removes useless pending playback notifications in the middle for better performance
+-            clear();
+-            super.execute(r);
+-        }
+-    };
+-
+-    public static void peekIfNonnullThenDo(@NonNull Consumer<YoutubePlaybackService> consumer) {
+-        YoutubePlaybackService service = sInstance;
+-        if (service != null) {
+-            consumer.accept(service);
+-        }
+-    }
+-
+-    @Nullable
+-    public static YoutubePlaybackService get() {
+-        return sInstance;
+-    }
+-
+-    @Nullable
+-    public WebPlayer getWebPlayer() {
+-        return mPlayer;
+-    }
+-
+-    public boolean isPlaying() {
+-        int status = mPlayingStatus;
+-        return status == Youtube.PlayingStatus.PLAYING
+-                || status == Youtube.PlayingStatus.BUFFERRING;
+-    }
+-
+-    private MediaButtonEventHandler getMediaButtonEventHandler() {
+-        if (mMediaButtonEventHandler == null) {
+-            mMediaButtonEventHandler = new MediaButtonEventHandler(new Messenger(new MsgHandler()));
+-        }
+-        return mMediaButtonEventHandler;
+-    }
+-
+-    private ComponentName getMediaButtonEventReceiverComponent() {
+-        if (mMediaButtonEventReceiverComponent == null) {
+-            mMediaButtonEventReceiverComponent =
+-                    new ComponentName(mContext, MediaButtonEventReceiver.class);
+-        }
+-        return mMediaButtonEventReceiverComponent;
+-    }
+-
+-    public void addPlayerListener(@Nullable PlayerListener listener) {
+-        if (listener != null) {
+-            if (mListeners == null) {
+-                mListeners = new ListenerSet<>();
+-            }
+-            mListeners.add(listener);
+-        }
+-    }
+-
+-    public void removePlayerListener(@Nullable PlayerListener listener) {
+-        if (listener != null && mListeners != null) {
+-            mListeners.remove(listener);
+-        }
+-    }
+-
+-    @Override
+-    public void onCreate() {
+-        super.onCreate();
+-        mContext = getApplicationContext();
+-        mAudioManager = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
+-        sInstance = this;
+-    }
+-
+-    @Nullable
+-    @Override
+-    public IBinder onBind(Intent intent) {
+-        return null;
+-    }
+-
+-    @Override
+-    public int onStartCommand(Intent intent, int flags, int startId) {
+-        mRunning = true;
+-        String action = intent.getAction();
+-        switch (action) {
+-            case Constants.Actions.START:
+-            case Constants.Actions.START_FOREGROUND:
+-                Bundle bundle = intent.getExtras();
+-                if (bundle != null) {
+-                    String playlistId = bundle.getString(Constants.Extras.PLAYLIST_ID);
+-                    String videoId = bundle.getString(Constants.Extras.VIDEO_ID);
+-                    int videoIndex = bundle.getInt(Constants.Extras.VIDEO_INDEX);
+-                    long videoStartMs = bundle.getLong(Constants.Extras.VIDEO_START_MS);
+-                    boolean fromPlaybackView = bundle.getBoolean(Constants.Extras.FROM_PLAYBACK_VIEW);
+-                    if (action.equals(Constants.Actions.START_FOREGROUND)) {
+-                        NOTIFICATION_EXECUTOR.execute(() -> {
+-                            Notification notification =
+-                                    createNotification(videoId, SystemClock.elapsedRealtime(), false);
+-                            Executors.MAIN_EXECUTOR.execute(() -> {
+-                                if (mRunning) {
+-                                    startForeground(ID_NOTIFICATION, notification);
+-                                }
+-                            });
+-                        });
+-                    }
+-                    startPlayback(playlistId, videoId, videoIndex, videoStartMs, fromPlaybackView);
+-                }
+-                break;
+-            case Constants.Actions.STOP_SELF:
+-                stop();
+-                break;
+-            case Constants.Actions.PLAY_PAUSE:
+-                onTapPlayPause();
+-                break;
+-            case Constants.Actions.NEXT:
+-                onTapSkipNext();
+-                break;
+-            case Constants.Actions.PREV:
+-                onTapSkipPrevious();
+-                break;
+-        }
+-        return START_NOT_STICKY;
+-    }
+-
+-    @Synthetic void onTapPlayPause() {
+-        if (mPlayer == null) {
+-            return;
+-        }
+-        switch (mPlayingStatus) {
+-            case Youtube.PlayingStatus.UNSTARTED:
+-            case Youtube.PlayingStatus.VIDEO_CUED:
+-            case Youtube.PlayingStatus.PAUSED:
+-                mPlayer.play();
+-                break;
+-            case Youtube.PlayingStatus.ENDED:
+-                if (mReplayVideo) {
+-                    mPlayer.play();
+-                } else if (mReplayPlaylist) {
+-                    mPlayer.replayPlaylist();
+-                }
+-                mReplayPlaylist = mReplayVideo = false;
+-                break;
+-            case Youtube.PlayingStatus.BUFFERRING:
+-            case Youtube.PlayingStatus.PLAYING:
+-                mPlayer.pause();
+-                break;
+-        }
+-    }
+-
+-    @Synthetic void onTapSkipNext() {
+-        if (mPlayer == null) {
+-            return;
+-        }
+-        if (mLinkType == Constants.LinkType.SINGLES) {
+-            mPlayer.seekToDefault();
+-        } else {
+-            mPlayer.next();
+-        }
+-    }
+-
+-    @Synthetic void onTapSkipPrevious() {
+-        if (mPlayer == null) {
+-            return;
+-        }
+-        if (mLinkType == Constants.LinkType.SINGLES) {
+-            mPlayer.seekToDefault();
+-        } else {
+-            mPlayer.prev();
+-        }
+-    }
+-
+-    @Override
+-    public void onDestroy() {
+-        super.onDestroy();
+-        mRunning = false;
+-        sInstance = null;
+-        if (mHeadsetEventsReceiver != null) {
+-            mHeadsetEventsReceiver.unregister();
+-            mHeadsetEventsReceiver = null;
+-        }
+-        if (mPlayer != null) {
+-            mPlayer.stop();
+-            mPlayer = null;
+-            mPlayerReady = false;
+-        }
+-        if (mView != null) {
+-            mView.destroy();
+-        }
+-        if (YoutubePlaybackActivity.get() != null) {
+-            YoutubePlaybackActivity.get().finish();
+-        }
+-    }
+-
+-    @Override
+-    public void onTaskRemoved(Intent rootIntent) {
+-        super.onTaskRemoved(rootIntent);
+-        // Stops when user removes the task holding YoutubePlaybackActivity from the Recents,
+-        // or closes that Activity in PiP through the 'Close' button, etc.
+-        if (rootIntent != null
+-                && rootIntent.getComponent().getShortClassName()
+-                        .equals(YoutubePlaybackActivity.class.getName().replace(getPackageName(), ""))) {
+-            stop();
+-        }
+-    }
+-
+-    public void stop() {
+-        mRunning = false;
+-        stopForeground(true);
+-        stopSelf();
+-    }
+-
+-    public static boolean startPlaybackIfUrlIsWatchUrl(@NonNull Context context, @NonNull String url) {
+-        return startPlaybackIfUrlIsWatchUrl(context, url, false);
+-    }
+-
+-    public static boolean startPlaybackIfUrlIsWatchUrl(
+-            @NonNull Context context, @NonNull String url, boolean fromPlaybackView) {
+-        String videoId;
+-        String playlistId;
+-        int videoIndex;
+-        long videoStartMs;
+-
+-        if (Youtube.REGEX_WATCH_URL.matches(url)) {
+-            videoId = Youtube.Util.getVideoIdFromWatchUrl(url);
+-        } else if (Youtube.REGEX_SHARE_URL.matches(url)) {
+-            videoId = Youtube.Util.getVideoIdFromShareUrl(url);
+-        } else {
+-            return false;
+-        }
+-        playlistId = Youtube.Util.getPlaylistIdFromWatchOrShareUrl(url);
+-        videoIndex = Youtube.Util.getVideoIndexFromWatchOrShareUrl(url);
+-        videoStartMs = Youtube.Util.getVideoStartMsFromWatchOrShareUrl(url);
+-
+-        startPlayback(context, playlistId, videoId, videoIndex, videoStartMs, fromPlaybackView);
+-        return true;
+-    }
+-
+-    public static void startPlayback(
+-            @NonNull Context context,
+-            @Nullable String playlistId, @Nullable String videoId, long videoStartMs,
+-            boolean fromPlaybackView) {
+-        startPlayback(context, playlistId, videoId, Constants.UNKNOWN, videoStartMs, fromPlaybackView);
+-    }
+-
+-    public static void startPlayback(
+-            @NonNull Context context,
+-            @Nullable String playlistId, @Nullable String videoId, int videoIndex, long videoStartMs,
+-            boolean fromPlaybackView) {
+-        Intent intent = new Intent(context, YoutubePlaybackService.class);
+-        intent.putExtra(Constants.Extras.PLAYLIST_ID, playlistId);
+-        intent.putExtra(Constants.Extras.VIDEO_ID, videoId);
+-        intent.putExtra(Constants.Extras.VIDEO_INDEX, videoIndex);
+-        intent.putExtra(Constants.Extras.VIDEO_START_MS, videoStartMs);
+-        intent.putExtra(Constants.Extras.FROM_PLAYBACK_VIEW, fromPlaybackView);
+-        intent.setAction(
+-                Utils.isServiceRunning(context, YoutubePlaybackService.class) ?
+-                        Constants.Actions.START : Constants.Actions.START_FOREGROUND);
+-        context.startService(intent);
+-    }
+-
+-    private void startPlayback(
+-            @Nullable String playlistId, @Nullable String videoId, int videoIndex, long videoStartMs,
+-            boolean fromPlaybackView) {
+-        if (playlistId == null) {
+-            playlistId = "";
+-        }
+-        if (videoId == null) {
+-            videoId = "";
+-        }
+-        if (videoIndex == Constants.UNKNOWN && videoId.isEmpty()) {
+-            videoIndex = 0;
+-        }
+-
+-        boolean playerChanged;
+-        boolean videoIdChanged = !videoId.equals(mVideoId);
+-
+-        if (mView == null) {
+-            mView = new YoutubePlaybackView(this);
+-        }
+-        WebPlayer oldPlayer = mPlayer;
+-        mPlayer = YoutubePlayerFactory.obtain(mView);
+-        playerChanged = mPlayer != oldPlayer;
+-        if (playerChanged) {
+-            mView.setWebPlayer(mPlayer);
+-            mPlayerReady = false;
+-        }
+-
+-        if (playerChanged || (!playlistId.equals(mPlaylistId) || videoIdChanged)) {
+-            mSeekOnPlayerReady = Constants.UNKNOWN;
+-            mReplayPlaylist = mReplayVideo = false;
+-            if (Youtube.Prefs.get(mContext).retainHistoryVideoPages()) {
+-                // We need a new page if the history video pages in the backstack are required
+-                // by the user to be still held on to, so set mPlayerReady to false and use
+-                // the view to load the video/playlist down below.
+-                mPlayerReady = false;
+-            }
+-            if (playlistId.isEmpty()) {
+-                mLinkType = Constants.LinkType.SINGLES;
+-                mVideoId = videoId;
+-                mPlaylistId = "";
+-                mPlaylistSize = 1;
+-                mPlaylistIndex = 0;
+-                if (mPlayerReady) {
+-                    mPlayer.loadVideo(videoId, videoStartMs);
+-                } else {
+-                    mView.loadVideo(videoId, videoStartMs);
+-                }
+-            } else {
+-                mLinkType = Constants.LinkType.PLAYLIST;
+-                mVideoId = videoId;
+-                mPlaylistId = playlistId;
+-                mPlaylistSize = Constants.UNKNOWN;
+-                mPlaylistIndex = videoIndex;
+-                if (mPlayerReady && mPlayer instanceof YoutubePlayer) {
+-                    mPlayer.loadPlaylist(playlistId, videoId, videoIndex, videoStartMs);
+-                } else {
+-                    if (mPlayerReady && videoIndex != Constants.UNKNOWN) {
+-                        mPlayer.loadPlaylist(playlistId, videoId, videoIndex, videoStartMs);
+-                    } else {
+-                        mPlayerReady = false;
+-                        mView.loadPlaylist(playlistId, videoId, videoIndex, videoStartMs);
+-                    }
+-                }
+-            }
+-        } else {
+-            if (mPlayerReady) {
+-                videoSeekTo(videoStartMs);
+-            } else {
+-                mSeekOnPlayerReady = videoStartMs;
+-            }
+-        }
+-        if (playerChanged || !fromPlaybackView) {
+-            YoutubePlaybackActivity ytPlaybackActivity = YoutubePlaybackActivity.get();
+-            // Have the video view exit fullscreen first, to avoid it going fullscreen automatically
+-            // after it exits from PiP to the default display mode.
+-            if (ytPlaybackActivity != null && ytPlaybackActivity.isInPictureInPictureMode()) {
+-                mView.exitFullscreen();
+-            }
+-            if (playerChanged) {
+-                mView.addPageListener(new AndroidWebView.PageListener() {
+-                    @Override
+-                    public void onPageStarted(
+-                            @NonNull WebView view, @NonNull String url, @Nullable Bitmap favicon) {
+-                        // Clear history pages that used a different player
+-                        // XXX: We prefer to retain the history so that WebView can go back later
+-                        //      and resume them with the current player.
+-                        view.clearHistory();
+-                        mView.removePageListener(this);
+-                    }
+-                });
+-                if (ytPlaybackActivity != null) {
+-                    ActivityCompat.recreate(ytPlaybackActivity);
+-                }
+-            }
+-            playInForeground();
+-        }
+-        if (videoIdChanged) {
+-            Video video = new Video();
+-            video.setId(videoId);
+-            refreshNotificationForVideo(video);
+-        }
+-    }
+-
+-    public void playInForeground() {
+-        Intent fullscreenIntent = new Intent(mContext, YoutubePlaybackActivity.class);
+-        fullscreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+-        mContext.startActivity(fullscreenIntent);
+-    }
+-
+-    private void videoSeekTo(long videoStartMs) {
+-        if (mPlayer != null) {
+-            if (videoStartMs == Constants.TIME_UNSET) {
+-                mPlayer.seekToDefault();
+-            } else {
+-                mPlayer.seekTo(videoStartMs);
+-            }
+-        }
+-    }
+-
+-    /*package*/ void onGetPlaylistInfo(Playlist playlist) {
+-        if (playlist != null) {
+-            String[] videoIds = playlist.getVideoIds();
+-            mPlaylistSize = videoIds != null ? videoIds.length : 0;
+-            mPlaylistIndex = playlist.getVideoIndex();
+-        }
+-    }
+-
+-    @Override
+-    public void onPlayerReady() {
+-        if (mPlayer == null) {
+-            return;
+-        }
+-        mPlayerReady = true;
+-        if (mSeekOnPlayerReady != Constants.UNKNOWN) {
+-            videoSeekTo(mSeekOnPlayerReady);
+-            mSeekOnPlayerReady = Constants.UNKNOWN;
+-        }
+-        if (mHeadsetEventsReceiver == null) {
+-            mHeadsetEventsReceiver = new HeadsetEventsReceiver(mContext) {
+-                @Override
+-                public void onHeadsetPluggedOutOrBluetoothDisconnected() {
+-                    if (mPlayer != null) {
+-                        mPlayer.pause();
+-                    }
+-                }
+-            };
+-            mHeadsetEventsReceiver.register(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
+-        }
+-        if (mListeners != null) {
+-            mListeners.forEach(PlayerListener::onPlayerReady);
+-        }
+-    }
+-
+-    @SuppressLint("SwitchIntDef")
+-    @Override
+-    public void onPlayerStateChange(@Youtube.PlayingStatus int playingStatus) {
+-        if (mPlayer == null) {
+-            return;
+-        }
+-        switch (playingStatus) {
+-            case Youtube.PlayingStatus.PLAYING:
+-                mPlayPauseBtnImgSrc = R.drawable.ic_pause_white_24dp;
+-                mPlayPauseBtnContentDesc = R.string.pause;
+-//                if (mLinkType == Constants.LinkType.PLAYLIST) {
+-//                    mPlayer.requestGetPlaylistInfo();
+-//                }
+-
+-                mPlayer.skipAd();
+-                mPlayer.setMuted(false);
+-
+-                // Register MediaButtonEventReceiver every time the video starts, which
+-                // will ensure it to be the sole receiver of MEDIA_BUTTON intents
+-                MediaButtonEventReceiver.setMediaButtonEventHandler(getMediaButtonEventHandler());
+-                AudioManagerCompat.registerMediaButtonEventReceiver(
+-                        mContext, mAudioManager, getMediaButtonEventReceiverComponent());
+-                break;
+-            case Youtube.PlayingStatus.PAUSED:
+-                mPlayPauseBtnImgSrc = R.drawable.ic_play_white_24dp;
+-                mPlayPauseBtnContentDesc = R.string.play;
+-                break;
+-            case Youtube.PlayingStatus.ENDED:
+-                if (mLinkType == Constants.LinkType.PLAYLIST) {
+-                    switch (Settings.getRepeatMode()) {
+-                        case Constants.RepeatMode.SINGLE:
+-                            mPlayer.prev();
+-                            break;
+-                        // If not repeating then set notification icon to repeat when playlist ends
+-                        case Constants.RepeatMode.NONE:
+-                            mReplayPlaylist = true;
+-                            mPlayPauseBtnImgSrc = R.drawable.ic_replay_white_24dp;
+-                            mPlayPauseBtnContentDesc = R.string.replay;
+-                            break;
+-                    }
+-                } else {
+-                    if (Settings.getRepeatMode() != Constants.RepeatMode.NONE) {
+-                        mPlayer.play();
+-                    } else {
+-                        if (Settings.shouldFinishServiceOnPlaylistEnded()) {
+-                            stop();
+-                            return;
+-                        } else {
+-                            mReplayVideo = true;
+-                            mPlayPauseBtnImgSrc = R.drawable.ic_replay_white_24dp;
+-                            mPlayPauseBtnContentDesc = R.string.replay;
+-                        }
+-                    }
+-                }
+-                break;
+-        }
+-        mLastPlayingStatus = mPlayingStatus;
+-        mPlayingStatus = playingStatus;
+-        mPlayer.requestGetVideoInfo(true);
+-        if (mListeners != null) {
+-            mListeners.forEach(listener -> listener.onPlayerStateChange(playingStatus));
+-        }
+-    }
+-
+-    /*package*/ void onGetVideoInfo(Video video, boolean refreshNotification) {
+-        if (refreshNotification) {
+-            if (video == null) {
+-                video = EMPTY_VIDEO;
+-            }
+-            refreshNotificationForVideo(video);
+-        }
+-    }
+-
+-    private void refreshNotificationForVideo(Video video) {
+-        boolean changed = mLastPlayingStatus != mPlayingStatus
+-                || mVideo.getDuration() != video.getDuration()
+-                || mVideo.getCurrentPosition() != video.getCurrentPosition();
+-        recacheVideoInfo(video);
+-        if (!mNotiVideoId.equals(mVideoId)) {
+-            mNotiVideoId = mVideoId;
+-            changed = true;
+-        }
+-        if (changed) {
+-            refreshNotification(true);
+-        }
+-    }
+-
+-    private void recacheVideoInfo(Video video) {
+-        String lastVideoId = mVideo.getId();
+-        mLastPlayingStatus = mPlayingStatus;
+-        mVideo = video;
+-        // Video id may not currently available from the player, so we need to verify if we can
+-        // modify the mVideoId, as the played video can be changed directly through the web player,
+-        // like prev() and next() of the YoutubeIFramePlayer.
+-        if (!TextUtils.isEmpty(video.getId()) || emptyIfStringNull(lastVideoId).equals(mVideoId)) {
+-            mVideoId = emptyIfStringNull(video.getId());
+-        }
+-    }
+-
+-    public void refreshNotification() {
+-        refreshNotification(true);
+-    }
+-
+-    private void refreshNotification(boolean showVideoInfo) {
+-        long elapsedTime = SystemClock.elapsedRealtime();
+-        NOTIFICATION_EXECUTOR.execute(() -> {
+-            NotificationManager notificationManager =
+-                    (NotificationManager) mContext.getSystemService(NOTIFICATION_SERVICE);
+-            Notification notification = createNotification(mVideoId, elapsedTime, showVideoInfo);
+-            Executors.MAIN_EXECUTOR.execute(() -> {
+-                if (mRunning) {
+-                    notificationManager.notify(ID_NOTIFICATION, notification);
+-                }
+-            });
+-        });
+-    }
+-
+-    private Notification createNotification(String videoId, long elapsedTime, boolean loadInfo) {
+-        if (!mRunning) return null;
+-
+-        NotificationCompat.Builder builder = new NotificationCompat.Builder(
+-                this, NotificationChannelManager.getPlaybackControlNotificationChannelId(mContext));
+-
+-        String pkgName = mContext.getPackageName();
+-        RemoteViews viewBig = new RemoteViews(pkgName, R.layout.web_player_notification_view_large);
+-        RemoteViews viewSmall = new RemoteViews(pkgName, R.layout.web_player_notification_view_small);
+-
+-        Bitmap[] thumb = new Bitmap[1];
+-        String[] title_author = new String[2];
+-        CountDownLatch[] latch = new CountDownLatch[1];
+-
+-        if (loadInfo && !TextUtils.isEmpty(videoId)) {
+-            latch[0] = new CountDownLatch(2);
+-            Executors.MAIN_EXECUTOR.execute(() -> {
+-                Executor workerExecutor = Executors.THREAD_POOL_EXECUTOR;
+-                InternetResourceLoadTask.ofBitmap("https://i.ytimg.com/vi/" + videoId + "/mqdefault.jpg")
+-                        .onResult(new InternetResourceLoadTask.ResultCallback<Bitmap>() {
+-                            @Override
+-                            public void onCompleted(Bitmap _thumb) {
+-                                thumb[0] = _thumb;
+-                                latch[0].countDown();
+-                            }
+-                        }).executeOnExecutor(workerExecutor);
+-                InternetResourceLoadTask.ofString(
+-                        "https://www.youtube.com/oembed?url=http://www.youtu.be/watch?v="
+-                                + videoId + "&format=json")
+-                        .onResult(new InternetResourceLoadTask.ResultCallback<String>() {
+-                            @Override
+-                            public void onCompleted(String details) {
+-                                if (details != null) {
+-                                    try {
+-                                        JSONObject detailsJson = new JSONObject(details);
+-                                        title_author[0] = detailsJson.getString("title");
+-                                        title_author[1] = detailsJson.getString("author_name");
+-                                    } catch (JSONException e) {
+-                                        e.printStackTrace();
+-                                    }
+-                                }
+-                                latch[0].countDown();
+-                            }
+-                        }).executeOnExecutor(workerExecutor);
+-            });
+-        }
+-
+-        // Intent to do things
+-        Intent doThings = new Intent(mContext, YoutubePlaybackService.class);
+-        int iconTint = getNotificationActionIconTint();
+-
+-        RemoteViewsCompat.setImageViewResourceWithTint(
+-                this, viewSmall, R.id.btn_close, R.drawable.ic_close_white_20dp, iconTint);
+-        RemoteViewsCompat.setImageViewResourceWithTint(
+-                this, viewBig, R.id.btn_close, R.drawable.ic_close_white_20dp, iconTint);
+-        // Stop service using doThings Intent
+-        viewSmall.setOnClickPendingIntent(
+-                R.id.btn_close,
+-                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.STOP_SELF)));
+-        viewBig.setOnClickPendingIntent(
+-                R.id.btn_close,
+-                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.STOP_SELF)));
+-
+-        RemoteViewsCompat.setImageViewResourceWithTint(
+-                this, viewBig, R.id.btn_play_pause, mPlayPauseBtnImgSrc, iconTint);
+-        RemoteViewsCompat.setContentDescription(
+-                viewBig, R.id.btn_play_pause, getText(mPlayPauseBtnContentDesc));
+-        // Play, Pause video using doThings Intent
+-        viewBig.setOnClickPendingIntent(
+-                R.id.btn_play_pause,
+-                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.PLAY_PAUSE)));
+-
+-        RemoteViewsCompat.setImageViewResourceWithTint(
+-                this, viewBig, R.id.btn_next, R.drawable.ic_skip_next_white_24dp, iconTint);
+-        // Next video using doThings Intent
+-        viewBig.setOnClickPendingIntent(
+-                R.id.btn_next,
+-                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.NEXT)));
+-
+-        RemoteViewsCompat.setImageViewResourceWithTint(
+-                this, viewBig, R.id.btn_previous, R.drawable.ic_skip_previous_white_24dp, iconTint);
+-        // Previous video using doThings Intent
+-        viewBig.setOnClickPendingIntent(
+-                R.id.btn_previous,
+-                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.PREV)));
+-
+-        Intent it = new Intent(mContext, YoutubePlaybackActivity.class)
+-                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+-                        | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+-        PendingIntent pit = PendingIntent.getActivity(
+-                mContext, 0, it, Consts.PENDING_INTENT_FLAG_IMMUTABLE);
+-        builder.setSmallIcon(R.drawable.ic_media_app_notification)
+-                .setStyle(new DecoratedMediaCustomViewStyle())
+-                .setDefaults(0)
+-                .setOnlyAlertOnce(true)
+-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+-                .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+-                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+-                .setOngoing(true)
+-                .setCustomContentView(viewSmall)
+-                .setCustomBigContentView(viewBig)
+-                .setContentIntent(pit)
+-                .setAutoCancel(false);
+-
+-        if (latch[0] != null) {
+-            while (latch[0].getCount() > 0) {
+-                try {
+-                    latch[0].await();
+-                } catch (InterruptedException e) {
+-                    e.printStackTrace();
+-                }
+-            }
+-
+-            Bitmap _thumb = thumb[0];
+-            String title = title_author[0];
+-            String author = title_author[1];
+-            if (_thumb != null) {
+-                viewBig.setImageViewBitmap(R.id.image_thumbnail, _thumb);
+-                viewSmall.setImageViewBitmap(R.id.image_thumbnail, _thumb);
+-            }
+-            if (title != null) {
+-                builder.setTicker(title);
+-                viewBig.setTextViewText(R.id.text_title, title);
+-                viewSmall.setTextViewText(R.id.text_title, title);
+-            }
+-            if (author != null) {
+-                viewBig.setTextViewText(R.id.text_author, author);
+-                viewSmall.setTextViewText(R.id.text_author, author);
+-            }
+-        }
+-
+-        // Chronometer
+-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+-            if (loadInfo) {
+-                long endTime = elapsedTime + (mVideo.getDuration() - mVideo.getCurrentPosition());
+-                if (endTime > SystemClock.elapsedRealtime()) {
+-                    viewBig.setLong(R.id.countdownChronometer, "setBase", endTime);
+-                    viewBig.setBoolean(R.id.countdownChronometer,
+-                            "setStarted", mPlayingStatus == Youtube.PlayingStatus.PLAYING);
+-                }
+-            }
+-        } else {
+-            viewBig.setViewVisibility(R.id.countdownChronometer, View.GONE);
+-        }
+-
+-        return builder.build();
+-    }
+-
+-    private PendingIntent getNotificationActionPendingIntent(Intent intent) {
+-        return PendingIntent.getService(mContext, 0, intent, Consts.PENDING_INTENT_FLAG_IMMUTABLE);
+-    }
+-
+-    /**
+-     * Gets the notification action icon tint relying on the current theme. Do NOT cache statically!
+-     */
+-    private int getNotificationActionIconTint() {
+-        // MUST use the application Context to retrieve the default text color of the below
+-        // TextAppearance used by the system UI, whose night mode the application Context will
+-        // always keep in sync with.
+-        return ThemeUtils.getTextAppearanceDefaultTextColor(
+-                mContext, R.style.TextAppearance_Compat_Notification_Media);
+-    }
+-
+-    private static final class MsgHandler extends Handler {
+-        MsgHandler() {
+-            super(Looper.getMainLooper());
+-        }
+-
+-        @Override
+-        public void handleMessage(@NonNull Message msg) {
+-            YoutubePlaybackService service = YoutubePlaybackService.get();
+-            if (service == null) return;
+-
+-            switch (msg.what) {
+-                case MediaButtonEventHandler.MSG_PLAY_PAUSE_KEY_SINGLE_TAP:
+-                    service.onTapPlayPause();
+-                    break;
+-                // Consider double tap as the next.
+-                case MediaButtonEventHandler.MSG_PLAY_PAUSE_KEY_DOUBLE_TAP:
+-                case MediaButtonEventHandler.MSG_MEDIA_NEXT:
+-                    service.onTapSkipNext();
+-                    break;
+-                // Consider triple tap as the previous.
+-                case MediaButtonEventHandler.MSG_PLAY_PAUSE_KEY_TRIPLE_TAP:
+-                case MediaButtonEventHandler.MSG_MEDIA_PREVIOUS:
+-                    service.onTapSkipPrevious();
+-                    break;
+-            }
+-        }
+-    }
+-}
+\ No newline at end of file
+diff --git a/web/src/main/java/com/liuzhenlin/videos/web/youtube/YoutubePlaybackService.kt b/web/src/main/java/com/liuzhenlin/videos/web/youtube/YoutubePlaybackService.kt
+new file mode 100644
+index 0000000..1cb1595
+--- /dev/null
++++ b/web/src/main/java/com/liuzhenlin/videos/web/youtube/YoutubePlaybackService.kt
+@@ -0,0 +1,791 @@
++/*
++ * Created on 2022-2-18 5:54:39 PM.
++ * Copyright © 2022 刘振林. All rights reserved.
++ */
++package com.liuzhenlin.videos.web.youtube
++
++import android.annotation.SuppressLint
++import android.app.Notification
++import android.app.NotificationManager
++import android.app.PendingIntent
++import android.app.Service
++import android.content.ComponentName
++import android.content.Context
++import android.content.Intent
++import android.graphics.Bitmap
++import android.media.AudioManager
++import android.os.Build
++import android.os.Handler
++import android.os.IBinder
++import android.os.Looper
++import android.os.Message
++import android.os.Messenger
++import android.os.SystemClock
++import android.text.TextUtils
++import android.view.View
++import android.webkit.WebView
++import android.widget.RemoteViews
++import androidx.core.app.ActivityCompat
++import androidx.core.app.NotificationCompat
++import androidx.core.util.Consumer
++import com.liuzhenlin.common.Consts
++import com.liuzhenlin.common.compat.AudioManagerCompat
++import com.liuzhenlin.common.compat.RemoteViewsCompat
++import com.liuzhenlin.common.notification.style.DecoratedMediaCustomViewStyle
++import com.liuzhenlin.common.receiver.HeadsetEventsReceiver
++import com.liuzhenlin.common.receiver.MediaButtonEventHandler
++import com.liuzhenlin.common.receiver.MediaButtonEventReceiver
++import com.liuzhenlin.common.utils.AppScope
++import com.liuzhenlin.common.utils.InternetResourceLoadTask
++import com.liuzhenlin.common.utils.ListenerSet
++import com.liuzhenlin.common.utils.NotificationChannelManager
++import com.liuzhenlin.common.utils.SerialExecutor
++import com.liuzhenlin.common.utils.ThemeUtils
++import com.liuzhenlin.common.utils.Utils
++import com.liuzhenlin.common.utils.executeOnCoroutine
++import com.liuzhenlin.videos.web.AndroidWebView
++import com.liuzhenlin.videos.web.R
++import com.liuzhenlin.videos.web.bean.Playlist
++import com.liuzhenlin.videos.web.bean.Video
++import com.liuzhenlin.videos.web.player.Constants
++import com.liuzhenlin.videos.web.player.PlayerWebView
++import com.liuzhenlin.videos.web.player.Settings
++import com.liuzhenlin.videos.web.player.WebPlayer
++import com.liuzhenlin.videos.web.youtube.Youtube.PlayingStatus
++import kotlinx.coroutines.CoroutineDispatcher
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Deferred
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.asCoroutineDispatcher
++import kotlinx.coroutines.cancel
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.plus
++import kotlinx.coroutines.withContext
++import org.json.JSONException
++import org.json.JSONObject
++import kotlin.concurrent.Volatile
++
++class YoutubePlaybackService : Service(), PlayerListener {
++
++    private var mCoroutineScope: CoroutineScope? = null
++
++    @JvmField
++    protected var mView: PlayerWebView? = null
++
++    public var webPlayer: WebPlayer? = null
++        private set
++
++    @JvmField
++    protected var mPlayerReady: Boolean = false
++
++    private var mSeekOnPlayerReady: Long = Constants.UNKNOWN.toLong()
++
++    private var mNotiVideoId = ""
++    private var mVideoId = ""
++    private var mPlaylistId = ""
++
++    private var mLinkType = 0
++
++    private var mPlaylistSize = 0
++    private var mPlaylistIndex = 0
++
++    @Volatile private var mVideo: Video? = EMPTY_VIDEO
++
++    @PlayingStatus
++    @JvmField
++    @Volatile protected var mPlayingStatus: Int = PlayingStatus.UNSTARTED
++    private var mLastPlayingStatus = mPlayingStatus
++
++    private var mReplayVideo = false
++    private var mReplayPlaylist = false
++
++    @Volatile private var mPlayPauseBtnImgSrc = R.drawable.ic_pause_white_24dp
++    @Volatile private var mPlayPauseBtnContentDesc = R.string.pause
++
++    private var mAudioManager: AudioManager? = null
++    private var mHeadsetEventsReceiver: HeadsetEventsReceiver? = null
++    private val mMediaButtonEventHandler: MediaButtonEventHandler by lazy(LazyThreadSafetyMode.NONE) {
++        MediaButtonEventHandler(Messenger(MsgHandler()))
++    }
++    private var mMediaButtonEventReceiverComponent: ComponentName? = null
++        get() {
++            if (field == null) {
++                field = ComponentName(applicationContext, MediaButtonEventReceiver::class.java)
++            }
++            return field
++        }
++
++    private var mListeners: ListenerSet<PlayerListener>? = null
++
++    val isPlaying: Boolean
++        get() {
++            val status = mPlayingStatus
++            return (status == PlayingStatus.PLAYING || status == PlayingStatus.BUFFERRING)
++        }
++
++    fun addPlayerListener(listener: PlayerListener?) {
++        if (listener != null) {
++            if (mListeners == null) {
++                mListeners = ListenerSet()
++            }
++            mListeners?.add(listener)
++        }
++    }
++
++    fun removePlayerListener(listener: PlayerListener?) {
++        if (listener != null) {
++            mListeners?.remove(listener)
++        }
++    }
++
++    override fun onCreate() {
++        super.onCreate()
++        applicationContext.let {
++            mAudioManager = it.getSystemService(AUDIO_SERVICE) as AudioManager
++            mCoroutineScope = AppScope + SupervisorJob()
++        }
++        sInstance = this
++    }
++
++    override fun onBind(intent: Intent): IBinder? {
++        return null
++    }
++
++    override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
++        val action = intent.action
++        when (action) {
++            Constants.Actions.START, Constants.Actions.START_FOREGROUND -> {
++                val bundle = intent.extras
++                if (bundle != null) {
++                    val playlistId = bundle.getString(Constants.Extras.PLAYLIST_ID)
++                    val videoId = bundle.getString(Constants.Extras.VIDEO_ID)
++                    val videoIndex = bundle.getInt(Constants.Extras.VIDEO_INDEX)
++                    val videoStartMs = bundle.getLong(Constants.Extras.VIDEO_START_MS)
++                    val fromPlaybackView = bundle.getBoolean(Constants.Extras.FROM_PLAYBACK_VIEW)
++                    if (action == Constants.Actions.START_FOREGROUND) {
++                        mCoroutineScope?.launch(NotificationDispatcher) {
++                            val notification =
++                                    createNotification(videoId, SystemClock.elapsedRealtime(), false)
++                            withContext(Dispatchers.Main) {
++                                startForeground(ID_NOTIFICATION, notification)
++                            }
++                        }
++                    }
++                    startPlayback(playlistId, videoId, videoIndex, videoStartMs, fromPlaybackView)
++                }
++            }
++            Constants.Actions.STOP_SELF -> stop()
++            Constants.Actions.PLAY_PAUSE -> onTapPlayPause()
++            Constants.Actions.NEXT -> onTapSkipNext()
++            Constants.Actions.PREV -> onTapSkipPrevious()
++        }
++        return START_NOT_STICKY
++    }
++
++    private fun onTapPlayPause() {
++        webPlayer?.let {
++            when (mPlayingStatus) {
++                PlayingStatus.UNSTARTED, PlayingStatus.VIDEO_CUED, PlayingStatus.PAUSED -> it.play()
++                PlayingStatus.ENDED -> {
++                    if (mReplayVideo) {
++                        it.play()
++                    } else if (mReplayPlaylist) {
++                        it.replayPlaylist()
++                    }
++                    mReplayVideo = false
++                    mReplayPlaylist = false
++                }
++                PlayingStatus.BUFFERRING, PlayingStatus.PLAYING -> it.pause()
++            }
++        }
++    }
++
++    private fun onTapSkipNext() {
++        webPlayer?.let {
++            if (mLinkType == Constants.LinkType.SINGLES) {
++                it.seekToDefault()
++            } else {
++                it.next()
++            }
++        }
++    }
++
++    private fun onTapSkipPrevious() {
++        webPlayer?.let {
++            if (mLinkType == Constants.LinkType.SINGLES) {
++                it.seekToDefault()
++            } else {
++                it.prev()
++            }
++        }
++    }
++
++    override fun onDestroy() {
++        super.onDestroy()
++        mCoroutineScope?.let {
++            it.cancel()
++            mCoroutineScope = null
++        }
++        sInstance = null
++        mHeadsetEventsReceiver?.let {
++            it.unregister()
++            mHeadsetEventsReceiver = null
++        }
++        webPlayer?.let {
++            it.stop()
++            webPlayer = null
++            mPlayerReady = false
++        }
++        mView?.destroy()
++        YoutubePlaybackActivity.get()?.finish()
++    }
++
++    override fun onTaskRemoved(rootIntent: Intent?) {
++        super.onTaskRemoved(rootIntent)
++        // Stops when user removes the task holding YoutubePlaybackActivity from the Recents,
++        // or closes that Activity in PiP through the 'Close' button, etc.
++        if (rootIntent != null
++                && (rootIntent.component?.shortClassName
++                        == YoutubePlaybackActivity::class.java.name.replace(packageName, ""))) {
++            stop()
++        }
++    }
++
++    fun stop() {
++        mCoroutineScope?.cancel()
++        mCoroutineScope = null
++        stopForeground(true)
++        stopSelf()
++    }
++
++    private fun startPlayback(
++        playlistId: String?, videoId: String?, videoIndex: Int, videoStartMs: Long,
++        fromPlaybackView: Boolean
++    ) {
++        var playlistId = playlistId
++        var videoId = videoId
++        var videoIndex = videoIndex
++        if (playlistId == null) {
++            playlistId = ""
++        }
++        if (videoId == null) {
++            videoId = ""
++        }
++        if (videoIndex == Constants.UNKNOWN && videoId.isEmpty()) {
++            videoIndex = 0
++        }
++
++        val playerChanged: Boolean
++        val videoIdChanged = videoId != mVideoId
++
++        var view = mView
++        if (view == null) {
++            view = YoutubePlaybackView(this)
++            mView = view
++        }
++        val oldPlayer = webPlayer
++        val player = YoutubePlayerFactory.obtain(view)
++        webPlayer = player
++        playerChanged = player !== oldPlayer
++        if (playerChanged) {
++            view.webPlayer = player
++            mPlayerReady = false
++        }
++
++        if (playerChanged || (playlistId != mPlaylistId || videoIdChanged)) {
++            mSeekOnPlayerReady = Constants.UNKNOWN.toLong()
++            mReplayVideo = false
++            mReplayPlaylist = false
++            if (Youtube.Prefs.get(applicationContext).retainHistoryVideoPages()) {
++                // We need a new page if the history video pages in the backstack are required
++                // by the user to be still held on to, so set mPlayerReady to false and use
++                // the view to load the video/playlist down below.
++                mPlayerReady = false
++            }
++            if (playlistId.isEmpty()) {
++                mLinkType = Constants.LinkType.SINGLES
++                mVideoId = videoId
++                mPlaylistId = ""
++                mPlaylistSize = 1
++                mPlaylistIndex = 0
++                if (mPlayerReady) {
++                    player.loadVideo(videoId, videoStartMs)
++                } else {
++                    view.loadVideo(videoId, videoStartMs)
++                }
++            } else {
++                mLinkType = Constants.LinkType.PLAYLIST
++                mVideoId = videoId
++                mPlaylistId = playlistId
++                mPlaylistSize = Constants.UNKNOWN
++                mPlaylistIndex = videoIndex
++                if (mPlayerReady && player is YoutubePlayer) {
++                    player.loadPlaylist(playlistId, videoId, videoIndex, videoStartMs)
++                } else {
++                    if (mPlayerReady && videoIndex != Constants.UNKNOWN) {
++                        player.loadPlaylist(playlistId, videoId, videoIndex, videoStartMs)
++                    } else {
++                        mPlayerReady = false
++                        view.loadPlaylist(playlistId, videoId, videoIndex, videoStartMs)
++                    }
++                }
++            }
++        } else {
++            if (mPlayerReady) {
++                videoSeekTo(videoStartMs)
++            } else {
++                mSeekOnPlayerReady = videoStartMs
++            }
++        }
++        if (playerChanged || !fromPlaybackView) {
++            val ytPlaybackActivity = YoutubePlaybackActivity.get()
++            // Have the video view exit fullscreen first, to avoid it going fullscreen automatically
++            // after it exits from PiP to the default display mode.
++            if (ytPlaybackActivity != null && ytPlaybackActivity.isInPictureInPictureMode) {
++                view.exitFullscreen()
++            }
++            if (playerChanged) {
++                view.addPageListener(object : AndroidWebView.PageListener {
++                    override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
++                        // Clear history pages that used a different player
++                        // XXX: We prefer to retain the history so that WebView can go back later
++                        //      and resume them with the current player.
++                        view.clearHistory()
++                        (view as YoutubePlaybackView).removePageListener(this)
++                    }
++                })
++                if (ytPlaybackActivity != null) {
++                    ActivityCompat.recreate(ytPlaybackActivity)
++                }
++            }
++            playInForeground()
++        }
++        if (videoIdChanged) {
++            val video = Video()
++            video.id = videoId
++            refreshNotificationForVideo(video)
++        }
++    }
++
++    fun playInForeground() {
++        applicationContext.let {
++            val fullscreenIntent = Intent(it, YoutubePlaybackActivity::class.java)
++            fullscreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++            it.startActivity(fullscreenIntent)
++        }
++    }
++
++    private fun videoSeekTo(videoStartMs: Long) {
++        webPlayer?.let {
++            if (videoStartMs == Constants.TIME_UNSET) {
++                it.seekToDefault()
++            } else {
++                it.seekTo(videoStartMs)
++            }
++        }
++    }
++
++    protected fun onGetPlaylistInfo(playlist: Playlist?) {
++        if (playlist != null) {
++            val videoIds = playlist.videoIds
++            mPlaylistSize = videoIds?.size ?: 0
++            mPlaylistIndex = playlist.videoIndex
++        }
++    }
++
++    override fun onPlayerReady() {
++        webPlayer?.let { player ->
++            mPlayerReady = true
++            if (mSeekOnPlayerReady != Constants.UNKNOWN.toLong()) {
++                videoSeekTo(mSeekOnPlayerReady)
++                mSeekOnPlayerReady = Constants.UNKNOWN.toLong()
++            }
++            if (mHeadsetEventsReceiver == null) {
++                mHeadsetEventsReceiver = object : HeadsetEventsReceiver(applicationContext) {
++                    public override fun onHeadsetPluggedOutOrBluetoothDisconnected() {
++                        player.pause()
++                    }
++                }
++                mHeadsetEventsReceiver?.register(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
++            }
++            mListeners?.forEach { listener -> listener.onPlayerReady() }
++        }
++    }
++
++    @SuppressLint("SwitchIntDef")
++    override fun onPlayerStateChange(@PlayingStatus playingStatus: Int) {
++        webPlayer?.let { player ->
++            when (playingStatus) {
++                PlayingStatus.PLAYING -> {
++                    mPlayPauseBtnImgSrc = R.drawable.ic_pause_white_24dp
++                    mPlayPauseBtnContentDesc = R.string.pause
++//                    if (mLinkType == Constants.LinkType.PLAYLIST) {
++//                        it.requestGetPlaylistInfo();
++//                    }
++
++                    player.skipAd()
++                    player.setMuted(false)
++
++                    // Register MediaButtonEventReceiver every time the video starts, which
++                    // will ensure it to be the sole receiver of MEDIA_BUTTON intents
++                    MediaButtonEventReceiver.setMediaButtonEventHandler(mMediaButtonEventHandler)
++                    mAudioManager?.let {
++                        AudioManagerCompat.registerMediaButtonEventReceiver(
++                                applicationContext, it, mMediaButtonEventReceiverComponent)
++                    }
++                }
++
++                PlayingStatus.PAUSED -> {
++                    mPlayPauseBtnImgSrc = R.drawable.ic_play_white_24dp
++                    mPlayPauseBtnContentDesc = R.string.play
++                }
++
++                PlayingStatus.ENDED ->
++                    if (mLinkType == Constants.LinkType.PLAYLIST) {
++                        when (Settings.getRepeatMode()) {
++                            Constants.RepeatMode.SINGLE -> player.prev()
++                            Constants.RepeatMode.NONE -> {
++                                mReplayPlaylist = true
++                                mPlayPauseBtnImgSrc = R.drawable.ic_replay_white_24dp
++                                mPlayPauseBtnContentDesc = R.string.replay
++                            }
++                        }
++                    } else {
++                        if (Settings.getRepeatMode() != Constants.RepeatMode.NONE) {
++                            player.play()
++                        } else {
++                            if (Settings.shouldFinishServiceOnPlaylistEnded()) {
++                                stop()
++                                return
++                            } else {
++                                mReplayVideo = true
++                                mPlayPauseBtnImgSrc = R.drawable.ic_replay_white_24dp
++                                mPlayPauseBtnContentDesc = R.string.replay
++                            }
++                        }
++                    }
++            }
++            mLastPlayingStatus = mPlayingStatus
++            mPlayingStatus = playingStatus
++            player.requestGetVideoInfo(true)
++            mListeners?.forEach { listener: PlayerListener ->
++                listener.onPlayerStateChange(playingStatus)
++            }
++        }
++    }
++
++    protected fun onGetVideoInfo(video: Video?, refreshNotification: Boolean) {
++        var video = video
++        if (refreshNotification) {
++            if (video == null) {
++                video = EMPTY_VIDEO
++            }
++            refreshNotificationForVideo(video)
++        }
++    }
++
++    private fun refreshNotificationForVideo(video: Video?) {
++        var changed = mLastPlayingStatus != mPlayingStatus
++                || mVideo?.duration != video?.duration
++                || mVideo?.currentPosition != video?.currentPosition
++        recacheVideoInfo(video)
++        if (mNotiVideoId != mVideoId) {
++            mNotiVideoId = mVideoId
++            changed = true
++        }
++        if (changed) {
++            refreshNotification(true)
++        }
++    }
++
++    private fun recacheVideoInfo(video: Video?) {
++        val lastVideoId = mVideo?.id
++        mLastPlayingStatus = mPlayingStatus
++        mVideo = video
++        // Video id may not currently available from the player, so we need to verify if we can
++        // modify the mVideoId, as the played video can be changed directly through the web player,
++        // like prev() and next() of the YoutubeIFramePlayer.
++        if (!TextUtils.isEmpty(video?.id) || Utils.emptyIfStringNull(lastVideoId) == mVideoId) {
++            mVideoId = Utils.emptyIfStringNull(video?.id)
++        }
++    }
++
++    fun refreshNotification() {
++        refreshNotification(true)
++    }
++
++    private fun refreshNotification(showVideoInfo: Boolean) {
++        val elapsedTime = SystemClock.elapsedRealtime()
++        mCoroutineScope?.launch(NotificationDispatcher) {
++            val notificationManager =
++                    applicationContext.getSystemService(NOTIFICATION_SERVICE) as NotificationManager
++            val notification = createNotification(mVideoId, elapsedTime, showVideoInfo)
++            withContext(Dispatchers.Main) {
++                notificationManager.notify(ID_NOTIFICATION, notification)
++            }
++        }
++    }
++
++    private suspend fun createNotification(videoId: String?, elapsedTime: Long, loadInfo: Boolean)
++            : Notification {
++        val context = applicationContext
++        val builder = NotificationCompat.Builder(
++                this, NotificationChannelManager.getPlaybackControlNotificationChannelId(context))
++
++        val pkgName = context.packageName
++        val viewBig = RemoteViews(pkgName, R.layout.web_player_notification_view_large)
++        val viewSmall = RemoteViews(pkgName, R.layout.web_player_notification_view_small)
++
++        val thumb = arrayOfNulls<Bitmap>(1)
++        val title_author = arrayOfNulls<String>(2)
++
++        var bitmapTask: Deferred<Bitmap?>? = null
++        var jsonTask: Deferred<String?>? = null
++        if (loadInfo && !TextUtils.isEmpty(videoId)) {
++            withContext(Dispatchers.Main) {
++                bitmapTask =
++                    InternetResourceLoadTask.ofBitmap("https://i.ytimg.com/vi/$videoId/mqdefault.jpg")
++                        .onResult(object : InternetResourceLoadTask.ResultCallback<Bitmap?>() {
++                            override fun onCompleted(_thumb: Bitmap?) {
++                                thumb[0] = _thumb
++                            }
++                        }).executeOnCoroutine(this, Dispatchers.IO)
++                jsonTask =
++                    InternetResourceLoadTask.ofString(
++                            "https://www.youtube.com/oembed?url=http://www.youtu.be/watch?v="
++                                    + videoId + "&format=json")
++                        .onResult(object : InternetResourceLoadTask.ResultCallback<String?>() {
++                            override fun onCompleted(details: String?) {
++                                if (details != null) {
++                                    try {
++                                        val detailsJson = JSONObject(details)
++                                        title_author[0] = detailsJson.getString("title")
++                                        title_author[1] = detailsJson.getString("author_name")
++                                    } catch (e: JSONException) {
++                                        e.printStackTrace()
++                                    }
++                                }
++                            }
++                        }).executeOnCoroutine(this, Dispatchers.IO)
++            }
++        }
++
++        // Intent to do things
++        val doThings = Intent(context, YoutubePlaybackService::class.java)
++        val iconTint = notificationActionIconTint
++
++        RemoteViewsCompat.setImageViewResourceWithTint(
++                this, viewSmall, R.id.btn_close, R.drawable.ic_close_white_20dp, iconTint)
++        RemoteViewsCompat.setImageViewResourceWithTint(
++                this, viewBig, R.id.btn_close, R.drawable.ic_close_white_20dp, iconTint)
++        // Stop service using doThings Intent
++        viewSmall.setOnClickPendingIntent(
++                R.id.btn_close,
++                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.STOP_SELF)))
++        viewBig.setOnClickPendingIntent(
++                R.id.btn_close,
++                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.STOP_SELF)))
++
++        RemoteViewsCompat.setImageViewResourceWithTint(
++                this, viewBig, R.id.btn_play_pause, mPlayPauseBtnImgSrc, iconTint)
++        RemoteViewsCompat.setContentDescription(
++                viewBig, R.id.btn_play_pause, getText(mPlayPauseBtnContentDesc))
++        // Play, Pause video using doThings Intent
++        viewBig.setOnClickPendingIntent(
++                R.id.btn_play_pause,
++                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.PLAY_PAUSE)))
++
++        RemoteViewsCompat.setImageViewResourceWithTint(
++                this, viewBig, R.id.btn_next, R.drawable.ic_skip_next_white_24dp, iconTint)
++        // Next video using doThings Intent
++        viewBig.setOnClickPendingIntent(
++                R.id.btn_next,
++                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.NEXT)))
++
++        RemoteViewsCompat.setImageViewResourceWithTint(
++                this, viewBig, R.id.btn_previous, R.drawable.ic_skip_previous_white_24dp, iconTint)
++        // Previous video using doThings Intent
++        viewBig.setOnClickPendingIntent(
++                R.id.btn_previous,
++                getNotificationActionPendingIntent(doThings.setAction(Constants.Actions.PREV)))
++
++        val it = Intent(context, YoutubePlaybackActivity::class.java)
++                .setFlags(
++                        Intent.FLAG_ACTIVITY_NEW_TASK
++                                or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
++        val pit = PendingIntent.getActivity(context, 0, it, Consts.PENDING_INTENT_FLAG_IMMUTABLE)
++        builder.setSmallIcon(R.drawable.ic_media_app_notification)
++                .setStyle(DecoratedMediaCustomViewStyle())
++                .setDefaults(0)
++                .setOnlyAlertOnce(true)
++                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
++                .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
++                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
++                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
++                .setOngoing(true)
++                .setCustomContentView(viewSmall)
++                .setCustomBigContentView(viewBig)
++                .setContentIntent(pit)
++                .setAutoCancel(false)
++
++        if (bitmapTask != null || jsonTask != null) {
++            bitmapTask?.await()
++            jsonTask?.await()
++
++            val _thumb = thumb[0]
++            val title = title_author[0]
++            val author = title_author[1]
++            if (_thumb != null) {
++                viewBig.setImageViewBitmap(R.id.image_thumbnail, _thumb)
++                viewSmall.setImageViewBitmap(R.id.image_thumbnail, _thumb)
++            }
++            if (title != null) {
++                builder.setTicker(title)
++                viewBig.setTextViewText(R.id.text_title, title)
++                viewSmall.setTextViewText(R.id.text_title, title)
++            }
++            if (author != null) {
++                viewBig.setTextViewText(R.id.text_author, author)
++                viewSmall.setTextViewText(R.id.text_author, author)
++            }
++        }
++
++        // Chronometer
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
++            if (loadInfo) {
++                mVideo?.let { video ->
++                    val endTime = elapsedTime + (video.duration - video.currentPosition)
++                    if (endTime > SystemClock.elapsedRealtime()) {
++                        viewBig.setLong(R.id.countdownChronometer, "setBase", endTime)
++                        viewBig.setBoolean(R.id.countdownChronometer,
++                                "setStarted", mPlayingStatus == PlayingStatus.PLAYING)
++                    }
++                }
++            }
++        } else {
++            viewBig.setViewVisibility(R.id.countdownChronometer, View.GONE)
++        }
++
++        return builder.build()
++    }
++
++    private fun getNotificationActionPendingIntent(intent: Intent): PendingIntent {
++        return PendingIntent.getService(applicationContext, 0, intent,
++                Consts.PENDING_INTENT_FLAG_IMMUTABLE)
++    }
++
++    private val notificationActionIconTint: Int
++        /**
++         * Gets the notification action icon tint relying on the current theme.
++         * Do NOT cache statically!
++         */
++        get() {
++            // MUST use the application Context to retrieve the default text color of the below
++            // TextAppearance used by the system UI, whose night mode the application Context will
++            // always keep in sync with.
++            return ThemeUtils.getTextAppearanceDefaultTextColor(
++                    applicationContext, R.style.TextAppearance_Compat_Notification_Media)
++        }
++
++    private class MsgHandler : Handler(Looper.getMainLooper()) {
++        override fun handleMessage(msg: Message) {
++            val service = get() ?: return
++
++            when (msg.what) {
++                MediaButtonEventHandler.MSG_PLAY_PAUSE_KEY_SINGLE_TAP ->
++                    service.onTapPlayPause()
++
++                MediaButtonEventHandler.MSG_PLAY_PAUSE_KEY_DOUBLE_TAP,
++                MediaButtonEventHandler.MSG_MEDIA_NEXT ->
++                    service.onTapSkipNext()
++
++                MediaButtonEventHandler.MSG_PLAY_PAUSE_KEY_TRIPLE_TAP,
++                MediaButtonEventHandler.MSG_MEDIA_PREVIOUS ->
++                    service.onTapSkipPrevious()
++            }
++        }
++    }
++
++    companion object {
++        private const val ID_NOTIFICATION = 20220216
++
++        @SuppressLint("StaticFieldLeak")
++        private var sInstance: YoutubePlaybackService? = null
++
++        @JvmField
++        protected val EMPTY_VIDEO: Video = Video()
++
++        private val NotificationDispatcher: CoroutineDispatcher =
++                object : SerialExecutor() {
++                    @Synchronized
++                    override fun execute(r: Runnable) {
++                        // Removes useless pending playback notifications in the middle
++                        // for better performance
++                        clear()
++                        super.execute(r)
++                    }
++                }.asCoroutineDispatcher()
++
++        @JvmStatic
++        fun peekIfNonnullThenDo(consumer: Consumer<YoutubePlaybackService?>) {
++            val service = sInstance
++            if (service != null) {
++                consumer.accept(service)
++            }
++        }
++
++        @JvmStatic
++        fun get(): YoutubePlaybackService? {
++            return sInstance
++        }
++
++        @JvmStatic
++        @JvmOverloads
++        fun startPlaybackIfUrlIsWatchUrl(
++            context: Context, url: String, fromPlaybackView: Boolean = false
++        ): Boolean {
++            val videoId = if (Youtube.REGEX_WATCH_URL.matches(url)) {
++                Youtube.Util.getVideoIdFromWatchUrl(url)
++            } else if (Youtube.REGEX_SHARE_URL.matches(url)) {
++                Youtube.Util.getVideoIdFromShareUrl(url)
++            } else {
++                return false
++            }
++            val playlistId = Youtube.Util.getPlaylistIdFromWatchOrShareUrl(url)
++            val videoIndex = Youtube.Util.getVideoIndexFromWatchOrShareUrl(url)
++            val videoStartMs = Youtube.Util.getVideoStartMsFromWatchOrShareUrl(url)
++
++            startPlayback(context, playlistId, videoId, videoIndex, videoStartMs, fromPlaybackView)
++            return true
++        }
++
++        fun startPlayback(
++            context: Context,
++            playlistId: String?, videoId: String?, videoStartMs: Long,
++            fromPlaybackView: Boolean
++        ) {
++            startPlayback(
++                    context, playlistId, videoId, Constants.UNKNOWN, videoStartMs, fromPlaybackView)
++        }
++
++        @JvmStatic
++        fun startPlayback(
++            context: Context,
++            playlistId: String?, videoId: String?, videoIndex: Int, videoStartMs: Long,
++            fromPlaybackView: Boolean
++        ) {
++            val intent = Intent(context, YoutubePlaybackService::class.java)
++            intent.putExtra(Constants.Extras.PLAYLIST_ID, playlistId)
++            intent.putExtra(Constants.Extras.VIDEO_ID, videoId)
++            intent.putExtra(Constants.Extras.VIDEO_INDEX, videoIndex)
++            intent.putExtra(Constants.Extras.VIDEO_START_MS, videoStartMs)
++            intent.putExtra(Constants.Extras.FROM_PLAYBACK_VIEW, fromPlaybackView)
++            intent.setAction(
++                    if (Utils.isServiceRunning(context, YoutubePlaybackService::class.java))
++                        Constants.Actions.START
++                    else Constants.Actions.START_FOREGROUND)
++            context.startService(intent)
++        }
++    }
++}
+\ No newline at end of file
 -- 
 2.47.0.windows.1
 
